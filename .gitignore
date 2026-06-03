@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+venv/
+.env
+
+# Reinforcement Learning & Logs (Stable-Baselines3, Tensorboard)
+runs/
+ckpts/
+*.zip        # Không push các model PPO đã train (file zip) lên git, trừ model tốt nhất
+*.pth
+*.pt
+*.log
+
+# ROS 2 & Gazebo
+log/
+build/
+install/
+*.sdf.bak
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+CLAUDE.md
+understand-anything/

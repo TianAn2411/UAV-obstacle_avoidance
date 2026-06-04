@@ -350,6 +350,7 @@ class LoggingManager:
             f"obstacle_slowdown={s.get('obstacle_slowdown', 0.0):.2f} "
             f"bypass_decision={s.get('bypass_decision', 0.0):.2f} "
             f"bypass_progress={s.get('bypass_progress', 0.0):.2f} "
+            f"stage1_subgoal={s.get('stage1_subgoal', 0.0):.2f} "
             f"bypass_subgoal={s.get('bypass_subgoal', 0.0):.2f} "
             f"ring_subgoal={s.get('ring_subgoal', 0.0):.2f} "
             f"pillar_passed={s.get('pillar_passed', 0.0):.2f} "

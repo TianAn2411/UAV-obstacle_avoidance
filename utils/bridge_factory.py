@@ -151,6 +151,10 @@ class ROSBridge(Node):
         self._vo_publish_lock = threading.Lock()
         self._vo_stop = False
         self._vo_thread = None
+        self._spin_stop = False
+        self._spin_thread = None
+        self._spin_lock = threading.Lock()
+        self._xrce_proc = None
 
         self._last_status_wall = 0.0
         self._last_control_mode_wall = 0.0
@@ -213,6 +217,9 @@ class ROSBridge(Node):
         # Dedicated thread streams VIO at 30Hz independent of rclpy spin_once,
         # so PX4 EKF always gets odometry even during blocking gz service calls.
         self._start_vo_thread()
+        # Background thread calls spin_once at 20Hz to keep PX4 callbacks alive
+        # during SubprocVecEnv idle gaps (when other envs are hard-resetting).
+        self._start_ros_spin_thread()
 
         self.depth_sub = self.create_subscription(
             Image,
@@ -363,6 +370,62 @@ class ROSBridge(Node):
             elif sleep_s < -period:
                 next_t = time.monotonic()
 
+    def _start_ros_spin_thread(self):
+        """Background thread: call rclpy.spin_once at 20Hz to keep PX4 callbacks
+        alive while the training loop is idle (SubprocVecEnv sync gaps)."""
+        if self._spin_thread is not None:
+            return
+        self._spin_stop = False
+
+        def _worker():
+            period = 0.05  # 20Hz
+            next_t = time.monotonic()
+            watchdog_tick = 0
+            while not self._spin_stop:
+                try:
+                    self._spin_once(0.0)
+                except Exception:
+                    pass
+                # XRCE agent watchdog: poll every ~5s (100 iters at 20Hz)
+                watchdog_tick += 1
+                if watchdog_tick >= 100:
+                    watchdog_tick = 0
+                    if self._xrce_proc is not None and self._xrce_proc.poll() is not None:
+                        self.logger.error(
+                            f"[XRCE AGENT DIED] model={self.model_name} "
+                            f"pid={self._xrce_proc.pid} returncode={self._xrce_proc.returncode}"
+                        )
+                        try:
+                            self._xrce_proc = subprocess.Popen(
+                                self._xrce_proc.args,
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                            )
+                            self.logger.info(
+                                f"[XRCE AGENT RELAUNCHED] pid={self._xrce_proc.pid}"
+                            )
+                        except Exception as exc:
+                            self.logger.error(f"[XRCE AGENT RELAUNCH FAILED] {exc}")
+                            self._xrce_proc = None
+                next_t += period
+                sleep_s = next_t - time.monotonic()
+                if sleep_s > 0:
+                    time.sleep(sleep_s)
+                else:
+                    next_t = time.monotonic()
+
+        self._spin_thread = threading.Thread(
+            target=_worker, name=f"ROSSpin_{self.model_name}", daemon=True
+        )
+        self._spin_thread.start()
+
+    def _spin_once(self, timeout_sec=0.05):
+        with self._spin_lock:
+            try:
+                rclpy.spin_once(self, timeout_sec=timeout_sec)
+            except Exception:
+                pass
+
     def _start_offboard_keepalive_thread(self):
         if self._keepalive_thread is not None:
             return
@@ -444,6 +507,13 @@ class ROSBridge(Node):
                             else:
                                 # Trong vùng hợp lý: hover.
                                 vz = 0.0
+                            with self._last_setpoint_lock:
+                                now_recheck = self.get_clock().now().nanoseconds * 1e-9
+                                last_t_recheck = float(self._last_setpoint_time)
+                            age_recheck = now_recheck - last_t_recheck if last_t_recheck > 0.0 else float("inf")
+                            if age_recheck <= self.keepalive_stale_time:
+                                time.sleep(self.keepalive_period)
+                                continue
                             self._publish_velocity_setpoint(vx, vy, 0.0, yr)
 
                             # Log throttle: tối đa 2.5 giây 1 lần
@@ -681,6 +751,13 @@ class ROSBridge(Node):
     def _failsafe_flags_cb(self, msg):
         self._last_failsafe_flags_wall = time.monotonic()
         self._failsafe_flags_msg = msg
+
+    def is_px4_callbacks_healthy(self, max_est_flags_age: float = 5.0) -> bool:
+        """Return False if estimator-flags callbacks have been silent for too long."""
+        if self._last_estimator_flags_wall <= 0.0:
+            return True  # never received yet — startup, don't penalise
+        age = time.monotonic() - self._last_estimator_flags_wall
+        return age < max_est_flags_age
 
     def _depth_cb(self, msg):
         img = self.cv_bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
@@ -984,7 +1061,7 @@ class ROSBridge(Node):
         for _ in range(count):
             with self._vo_publish_lock:
                 self._publish_visual_odometry()
-            rclpy.spin_once(self, timeout_sec=interval)
+            self._spin_once(interval)
 
     def notify_ekf_teleport(self, prime_count=30, reset_count=100, interval=0.01):
         """Báo EKF sau Gazebo teleport dùng NED + EV yaw strategy.
@@ -1211,9 +1288,9 @@ class ROSBridge(Node):
         """
         Ưu tiên theo thứ tự:
 
-        1. ROS model pose /model/<model>/pose (geometry_msgs/Pose).
-        2. Native Gazebo Transport Python subscriber:
-           /world/<world>/dynamic_pose/info, gz.msgs.Pose_V
+        1. Native Gazebo Transport Python subscriber:
+           /world/<world>/dynamic_pose/info, gz.msgs.Pose_V  ← 60Hz, no ROS bridge overhead
+        2. ROS model pose /model/<model>/pose (geometry_msgs/Pose)  ← fallback, bị throttle ~0.5Hz khi overloaded
         3. ROS EntityPose_V legacy path (optional).
         4. Fallback cuối: gz topic -e text parser.
 
@@ -1222,17 +1299,17 @@ class ROSBridge(Node):
         model_pose_topic = f"/model/{self.model_name}/pose"
         dynamic_pose_topic = f"/world/{self.world_name}/dynamic_pose/info"
 
-        if self._start_ros_model_pose_listener(model_pose_topic):
+        if self._start_native_gz_pose_listener(dynamic_pose_topic):
             return
 
         self.logger.warning(
-            f"[GZ POSE] ROS model pose unavailable; trying native gz transport. "
+            f"[GZ POSE] native gz transport unavailable; falling back to ROS model pose. "
             f"model_pose_topic={model_pose_topic} "
             f"dynamic_pose_topic={dynamic_pose_topic} "
             f"model={self.model_name} GZ_PARTITION={self.gz_partition}"
         )
 
-        if self._start_native_gz_pose_listener(dynamic_pose_topic):
+        if self._start_ros_model_pose_listener(model_pose_topic):
             return
 
         if EntityPose_V is not None:
@@ -1640,6 +1717,18 @@ class ROSBridge(Node):
             p1=0.0,
             p2=force_magic,
         )
+        threading.Thread(target=self._publish_zero_setpoints_post_disarm, daemon=True).start()
+
+    def _publish_zero_setpoints_post_disarm(self, duration: float = 2.0, hz: float = 10.0) -> None:
+        """Publish zero velocity setpoints after disarm to prevent offboard_control_signal_lost log noise."""
+        interval = 1.0 / hz
+        deadline = time.monotonic() + duration
+        while time.monotonic() < deadline:
+            try:
+                self._publish_velocity_setpoint(0.0, 0.0, 0.0, 0.0)
+            except Exception:
+                break
+            time.sleep(interval)
 
     def wait_until_armed(
         self, timeout=0.8, stream_mode="position", target_z_ned=-1.2
@@ -1658,7 +1747,7 @@ class ROSBridge(Node):
             else:
                 self.send_velocity(0.0, 0.0, 0.0, 0.0)
 
-            rclpy.spin_once(self, timeout_sec=0.03)
+            self._spin_once(0.03)
 
             if self.is_armed:
                 return True
@@ -1682,7 +1771,7 @@ class ROSBridge(Node):
             else:
                 self.send_velocity(0.0, 0.0, 0.0, 0.0)
 
-            rclpy.spin_once(self, timeout_sec=0.03)
+            self._spin_once(0.03)
 
             if self.offboard_enabled or self.nav_state == NavState.OFFBOARD:
                 return True
@@ -1710,7 +1799,7 @@ class ROSBridge(Node):
             self.logger.info("[ARM] already armed/offboard, continue.")
             for _ in range(10):
                 self.send_velocity(0.0, 0.0, 0.0, 0.0)
-                rclpy.spin_once(self, timeout_sec=0.05)
+                self._spin_once(0.05)
             self.enable_offboard_keepalive(True)
             return True
 
@@ -1724,7 +1813,7 @@ class ROSBridge(Node):
         # 1. Stream velocity setpoint trước khi set OFFBOARD (PX4 yêu cầu stream > 0.5s)
         for _ in range(50):
             self.send_velocity(0.0, 0.0, 0.0, 0.0)
-            rclpy.spin_once(self, timeout_sec=0.03)
+            self._spin_once(0.03)
 
         # 2. Chuyển sang OFFBOARD mode
         if not (self.offboard_enabled or self.nav_state == NavState.OFFBOARD):
@@ -1733,7 +1822,7 @@ class ROSBridge(Node):
             t0 = time.monotonic()
             while time.monotonic() - t0 < 2.0:
                 self.send_velocity(0.0, 0.0, 1.8, 0.0)
-                rclpy.spin_once(self, timeout_sec=0.05)
+                self._spin_once(0.05)
                 if self.offboard_enabled or self.nav_state == NavState.OFFBOARD:
                     offboard_ok = True
                     break
@@ -1749,7 +1838,7 @@ class ROSBridge(Node):
             armed_ok = False
             while time.monotonic() - t0 < 2.0:
                 self.send_velocity(0.0, 0.0, 1.5, 0.0)
-                rclpy.spin_once(self, timeout_sec=0.05)
+                self._spin_once(0.05)
                 if self.is_armed:
                     armed_ok = True
                     break
@@ -1764,7 +1853,7 @@ class ROSBridge(Node):
         while time.monotonic() - takeoff_t0 < 15.0:
             # Gửi liên tục vận tốc đi lên (vz = 1.5 m/s trong hệ quy chiếu ENU)
             self.send_velocity(0.0, 0.0, 1.8, 0.0)
-            rclpy.spin_once(self, timeout_sec=0.05)
+            self._spin_once(0.05)
 
             gz_alt = float(self.get_gazebo_position()[2])
             best_alt = max(best_alt, gz_alt)
@@ -1779,17 +1868,17 @@ class ROSBridge(Node):
         # Settle thêm 1 chút cho ổn định bằng cách phanh lại (vz = 0)
         for _ in range(10):
             self.send_velocity(0.0, 0.0, 0.0, 0.0)
-            rclpy.spin_once(self, timeout_sec=0.03)
+            self._spin_once(0.03)
 
         if best_alt < 0.35:
             self.logger.error(f"[ARM] takeoff did not lift enough, fail. best_alt={best_alt:.2f}")
             # Thử thêm 1 lần hích cực mạnh cuối cùng thay vì bỏ cuộc luôn
             self.send_velocity(0.0, 0.0, 3.0, 0.0)
-            rclpy.spin_once(self, timeout_sec=0.5)
+            self._spin_once(0.5)
             return False
 
         self.logger.debug(f"[ARM] OFFBOARD velocity takeoff done. best_alt={best_alt:.2f}")
-        self.enable_offboard_keepalive(False)
+        self.enable_offboard_keepalive(False)  # Không cần giữ setpoint khi đã ổn định ở độ cao mong muốn
         return True
 
 
@@ -1814,7 +1903,7 @@ class ROSBridge(Node):
         ex.shutdown(wait=False)
         deadline = time.monotonic() + float(max_wait_s)
         while not fut.done():
-            rclpy.spin_once(self, timeout_sec=0.005)
+            self._spin_once(0.005)
             if time.monotonic() > deadline:
                 self.logger.warning(
                     f"[GZ SPIN WRAP] {getattr(fn, '__name__', str(fn))} still running "
@@ -1964,7 +2053,7 @@ class ROSBridge(Node):
         t0 = time.monotonic()
 
         while time.monotonic() - t0 < timeout:
-            rclpy.spin_once(self, timeout_sec=0.05)
+            self._spin_once(0.05)
 
             with self._gz_lock:
                 pos = self.gz_pos.copy()
@@ -2084,7 +2173,7 @@ class ROSBridge(Node):
 
             remaining = end_time - time.monotonic()
             spin_t0 = time.monotonic()
-            rclpy.spin_once(self, timeout_sec=min(0.005, max(0.0, remaining)))
+            self._spin_once(min(0.005, max(0.0, remaining)))
             spin_dt = time.monotonic() - spin_t0
             spin_count += 1
             max_spin = max(max_spin, spin_dt)
@@ -2275,7 +2364,7 @@ class ROSBridge(Node):
 
         for _ in range(3):
             self._send_cmd(220, p1=0.0, p2=0.0, p7=0.0)
-            rclpy.spin_once(self, timeout_sec=0.05)
+            self._spin_once(0.05)
 
 
 class Spawner:
@@ -2671,11 +2760,12 @@ def make_bridge(
     px4_ns="",
     target_system=1,
     gz_partition=None,
+    xrce_proc=None,
 ):
     if not rclpy.ok():
         rclpy.init()
 
-    return ROSBridge(
+    bridge = ROSBridge(
         gazebo_port,
         world_name=world,
         model_name=model_name,
@@ -2683,6 +2773,8 @@ def make_bridge(
         target_system=target_system,
         gz_partition=gz_partition,
     )
+    bridge._xrce_proc = xrce_proc
+    return bridge
 
 
 def make_spawner(world="default", gz_partition=None, verbose_pillar_verify=False):

@@ -126,7 +126,7 @@ class RewardManager:
         # --- Navigation ---
         progress = state.prev_dist_xy - state.dist_xy
         c.progress = self._reward_progress(state, progress)
-        c.time = self._reward_time(state.step_count)
+        c.time = self._reward_time(state.step_count, state)
         c.velocity_goal = self._reward_velocity_goal(state)
         c.heading_goal = self._reward_heading_goal(state)
 
@@ -221,17 +221,18 @@ class RewardManager:
             return coef * progress
         return self._r.progress_neg_coef * progress
 
-    def _reward_time(self, step_count: int) -> float:
+    def _reward_time(self, step_count: int, state: StepState) -> float:
         # Escalating penalty. Source: old drone_env.py L5024-5032
         r = self._r.time_penalty_base
-        if step_count > 170:
-            r += self._r.time_penalty_step170
-        if step_count > 250:
-            r += self._r.time_penalty_step250
-        if step_count > 350:
-            r += self._r.time_penalty_step350
-        if step_count > 450:
-            r += self._r.time_penalty_step450
+        if state.num_pillars > 0:
+            if step_count > 170:
+                r += self._r.time_penalty_step170
+            if step_count > 250:
+                r += self._r.time_penalty_step250
+            if step_count > 350:
+                r += self._r.time_penalty_step350
+            if step_count > 450:
+                r += self._r.time_penalty_step450
         return r
 
     def _reward_altitude(self, state: StepState) -> tuple[float, float]:
@@ -528,21 +529,37 @@ class RewardManager:
         return out
 
     def _reward_terminal(self, state: StepState) -> float:
-        # Source: old drone_env.py L6514-6525
         r = self._r
+        # Goal success — no near-fence addition
         if state.done_reason in ("goal_xy", "goal_3d", "success", "goal_reached"):
             return r.goal_xy_terminal_reward
+        # out_of_fence — full penalty, skip near-fence addition (already violated)
+        if state.is_terminal and state.done_reason == "out_of_fence":
+            return r.out_of_fence_penalty
+
+        base = 0.0
         if state.is_truncated and state.done_reason == "max_steps":
             near_goal = state.dist_xy <= max(state.goal_xy_radius * r.near_goal_threshold_factor, 1.0)
             if state.num_pillars == 0:
-                return r.max_steps_penalty_no_pillars
+                base = r.max_steps_penalty_no_pillars
             elif near_goal:
-                return r.max_steps_penalty_pillars_near_goal
+                base = r.max_steps_penalty_pillars_near_goal
             else:
-                return r.max_steps_penalty_pillars_far_goal
-        if state.is_terminal and state.done_reason == "collision":
-            return -280.0
-        return 0.0
+                base = r.max_steps_penalty_pillars_far_goal
+        elif state.is_terminal and state.done_reason == "collision":
+            base = r.collision_penalty
+        elif state.is_terminal and state.done_reason == "fell_to_ground":
+            base = r.fell_to_ground_penalty
+        elif state.is_terminal and state.done_reason == "flipped":
+            base = r.flipped_penalty
+
+        # Near-fence penalty — only at episode end
+        if (state.is_terminal or state.is_truncated):
+            fence_margin = self._fence_margin_xy(state.pos[:2])
+            if fence_margin < self._e.continuous_reset_fence_margin_thresh:
+                base += r.out_of_fence_penalty * r.near_fence_terminal_penalty_factor
+
+        return base
 
     # ------------------------------------------------------------------ #
     # Geometry utilities                                                  #

@@ -68,6 +68,13 @@ class PillarManager:
         self._ring_sgs: list[dict] = []
         self._ring_claimed: dict[int, int] = {}
 
+        # Stage1 subgoal state (straight-line waypoints, num_pillars==0 only)
+        self._stage1_sgs_xy: list[np.ndarray] = []
+        self._stage1_reached: list[bool] = []
+        self._stage1_near_rewarded: list[bool] = []
+        self._stage1_idx: int = 0
+        self._stage1_reward_scale: float = 1.0
+
         # Step output caches
         self._last_collision_snap: dict = {}
         self._last_bypass_info: dict = {"reward": 0.0, "active_subgoal": None, "clearance_gain": 0.0}
@@ -84,6 +91,9 @@ class PillarManager:
 
         self._episode_start_xy = np.array(start[:2], dtype=np.float32)
         self._episode_goal_xy = np.array(goal[:2], dtype=np.float32)
+
+        # Stage1 subgoals always set up (guards num_pillars==0 internally)
+        self._setup_stage1_subgoals(start, goal)
 
         p = self._p
         if p.num_pillars == 0:
@@ -286,6 +296,9 @@ class PillarManager:
             pos, vel_xy, nearest_meta, nearest_xy, nearest_dist
         )
 
+        # Stage1 subgoal update (open-field stages, num_pillars==0)
+        stage1_reward = self._update_stage1_subgoals(pos_xy)
+
         # Bypass subgoal update
         bypass_reward, bypass_near_count, bypass_reach_count = self._update_bypass_subgoals(pos_xy)
         active_bypass = self._get_active_bypass_subgoal()
@@ -343,7 +356,7 @@ class PillarManager:
             "t_closest": t_closest if t_closest is not None else float("nan"),
             "collision_radius": (nearest_pillar_r + p.drone_trigger_radius + p.pillar_collision_margin),
             "speed": speed,
-            "stage1_subgoal_reward": 0.0,
+            "stage1_subgoal_reward": stage1_reward,
             "pillar_passed_reward": reward_pillar_passed,
             "clearance_progress_reward": reward_clearance_progress,
             "near_miss_reward": reward_near_miss,
@@ -610,6 +623,60 @@ class PillarManager:
     # Per-step subgoal updates                                            #
     # ------------------------------------------------------------------ #
 
+    def _setup_stage1_subgoals(self, start: np.ndarray, goal: np.ndarray) -> None:
+        """Place 2-4 equidistant waypoints along start→goal line (num_pillars==0 only)."""
+        self._stage1_sgs_xy = []
+        self._stage1_reached = []
+        self._stage1_near_rewarded = []
+        self._stage1_idx = 0
+        self._stage1_reward_scale = 1.0
+
+        r = self._r
+        if self._p.num_pillars != 0:
+            return  # only for open-field stages
+
+        start_xy = np.asarray(start[:2], dtype=np.float32)
+        goal_xy  = np.asarray(goal[:2],  dtype=np.float32)
+        dist_xy  = float(np.linalg.norm(goal_xy - start_xy))
+
+        if not (r.stage1_subgoal_dist_min <= dist_xy <= r.stage1_subgoal_dist_max):
+            return
+
+        # Reward scale decays as distance increases (easier = more reward)
+        dist_span  = max(1e-6, r.stage1_subgoal_dist_max - r.stage1_subgoal_dist_min)
+        dist_alpha = float(np.clip((dist_xy - r.stage1_subgoal_dist_min) / dist_span, 0.0, 1.0))
+        self._stage1_reward_scale = 1.0  # fixed scale; configurable via reward_config if needed
+
+        n = 2 if dist_xy < 10.0 else (3 if dist_xy < 11.0 else 4)
+        for i in range(1, n + 1):
+            t = float(i) / float(n + 1)
+            sg_xy = (1.0 - t) * start_xy + t * goal_xy
+            self._stage1_sgs_xy.append(sg_xy)
+
+        self._stage1_reached      = [False] * len(self._stage1_sgs_xy)
+        self._stage1_near_rewarded = [False] * len(self._stage1_sgs_xy)
+
+    def _update_stage1_subgoals(self, pos_xy: np.ndarray) -> float:
+        """Check current subgoal, award near/reach rewards, advance index. Returns reward."""
+        if not self._stage1_sgs_xy or self._stage1_idx >= len(self._stage1_sgs_xy):
+            return 0.0
+
+        r      = self._r
+        reward = 0.0
+        i      = self._stage1_idx
+        sg_xy  = self._stage1_sgs_xy[i]
+        d      = float(np.linalg.norm(np.asarray(pos_xy, dtype=np.float32) - sg_xy))
+
+        if not self._stage1_near_rewarded[i] and d <= r.stage1_subgoal_near_radius:
+            self._stage1_near_rewarded[i] = True
+            reward += r.stage1_subgoal_near_reward * self._stage1_reward_scale
+
+        if d <= r.stage1_subgoal_reach_radius:
+            self._stage1_reached[i] = True
+            reward += r.stage1_subgoal_reach_reward * self._stage1_reward_scale
+            self._stage1_idx = min(len(self._stage1_sgs_xy), self._stage1_idx + 1)
+
+        return reward
     def _get_active_bypass_subgoal(self) -> Optional[np.ndarray]:
         if not self._bypass_sgs_xy:
             return None

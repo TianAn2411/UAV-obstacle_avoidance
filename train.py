@@ -144,7 +144,7 @@ def make_env(
         )
 
         # 4. Launch MicroXRCE agent — old L1088
-        start_microxrce_agent(rank, ros_domain)
+        xrce_proc = start_microxrce_agent(rank, ros_domain)
 
         model_name = f"x500_depth_{rank}"
         bridge_processes = []
@@ -225,6 +225,7 @@ def make_env(
             px4_ns=px4_ns,
             target_system=rank + 1,
             gz_partition=partition,
+            xrce_proc=xrce_proc,
         )
 
         spawner = make_spawner(
@@ -291,11 +292,9 @@ def run_training(stage: int = 1) -> None:
     run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     env_log_base = os.path.join(log_dir, "env_logs")  # env_logs/env_{rank}/stage{N}_{ts}/
     env_log_dir = os.path.join(env_log_base, f"stage{stage}_{run_ts}")
-    os.makedirs(env_log_dir, exist_ok=True)
     setup_logger(
         "obstacle_avoidance",
         info_log_file=os.path.join(log_dir, f"train_stage{stage}_{run_ts}.log"),
-        debug_log_file=os.path.join(log_dir, f"train_stage{stage}_{run_ts}_debug.log"),
     )
 
     logger.info(f"\n{'=' * 60}")

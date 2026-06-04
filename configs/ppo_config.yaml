@@ -2,8 +2,8 @@ algorithm: PPO
 policy: MultiInputPolicy
 
 # Core PPO
-n_steps: 2048
-batch_size: 256
+n_steps: 1024
+batch_size: 128
 n_epochs: 10
 learning_rate: 3.0e-4
 gamma: 0.99
@@ -15,9 +15,9 @@ max_grad_norm: 0.5
 
 # Training
 total_timesteps: 10_000_000
-n_envs: 1
+n_envs: 2
 log_dir: "runs/"
-checkpoint_freq: 50_000
+checkpoint_freq: 10_000
 
 # Curriculum stages
 # Optional env_overrides keys map directly to EnvConfig fields — any field can be overridden.

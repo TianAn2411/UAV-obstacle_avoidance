@@ -47,9 +47,8 @@ class ResetManager:
         base = self._classify_reset_action(reason)
 
         if base == "continuous":
-            # Downgrade to hard if too close to fence
             if fence_margin < self.ecfg.continuous_reset_fence_margin_thresh:
-                return ResetDecision(mode="hard", reason=reason, do_respawn_pillars=True)
+                return ResetDecision(mode="rescue_then_continuous", reason=reason, do_respawn_pillars=True)
             # Upgrade to multi_env_fast if eligible
             if self._should_use_multi_env_fast_reset(reason):
                 return ResetDecision(mode="multi_env_fast", reason=reason, do_respawn_pillars=True)
@@ -261,12 +260,13 @@ class ResetManager:
             self._idle_spin(duration=2.0)
 
             tp_wall = time.monotonic()
+            tp_min_stamp = self.bridge.get_clock().now().nanoseconds * 1e-9
             teleport_ok, teleport_target = self._teleport_to_target(start)
             if not teleport_ok:
                 self.logger.error("[RESET] Teleport failed, model may be missing")
                 continue
 
-            self._wait_gz_pose_near(teleport_target, tol=0.08, stable_hits=3, timeout=2.0)
+            self._wait_gz_pose_near(teleport_target, tol=0.15, stable_hits=3, timeout=3.0, min_stamp=tp_min_stamp)
             self._idle_spin(duration=0.5)
             self._wait_gz_pose_near(teleport_target, tol=0.10, stable_hits=1, timeout=0.6)
 
@@ -449,7 +449,13 @@ class ResetManager:
         if reason == "max_steps_near_fence_recentered":
             return self.continuous_episode_reset(reason=reason)
 
-        return None
+        # Near-fence downgrade from continuous (e.g. max_steps close to boundary)
+        rescue_ok = self._rescue_to_fence_interior_by_velocity()
+        if not rescue_ok:
+            self.rescue_fail_count += 1
+            return None
+        self.rescue_success_count += 1
+        return self.continuous_episode_reset(reason=reason)
 
     def pre_episode_auto_yaw_to_goal(self, goal: np.ndarray) -> None:
         """
@@ -529,6 +535,7 @@ class ResetManager:
         tol: float = 0.08,
         stable_hits: int = 3,
         timeout: float = 2.0,
+        min_stamp: float = 0.0,
     ) -> bool:
         """Poll gz position until within tol for stable_hits consecutive reads. Source: old drone_env.py L2979."""
         t0 = time.time()
@@ -542,12 +549,19 @@ class ResetManager:
             pos = self.bridge.get_gazebo_position()
             last_pos = pos
             stamp = getattr(self.bridge, "gz_pose_stamp", 0.0)
-            last_age = time.time() - float(stamp) if stamp else float("inf")
+
+            if hasattr(self.bridge, "get_clock"):
+                now_s = self.bridge.get_clock().now().nanoseconds * 1e-9
+            else:
+                now_s = time.time()
+
+            last_age = now_s - float(stamp) if stamp else float("inf")
+            stamp_ok = (float(stamp) >= min_stamp) if min_stamp > 0.0 else (float(stamp) > 0.0)
 
             ok = (
                 np.all(np.isfinite(pos))
                 and float(np.linalg.norm(np.asarray(pos, dtype=np.float32) - target)) <= float(tol)
-                and last_age < 0.20
+                and stamp_ok
             )
 
             if ok:
@@ -560,7 +574,7 @@ class ResetManager:
         self.logger.warning(
             f"[RESET][GZ POSE STABLE TIMEOUT] target={np.round(target, 3).tolist()} "
             f"pos={np.round(last_pos, 3).tolist() if last_pos is not None else None} "
-            f"age={last_age:.3f} hits={hits}/{stable_hits}"
+            f"age={last_age:.3f} stamp_ok={stamp_ok} min_stamp={min_stamp:.3f} hits={hits}/{stable_hits}"
         )
         return False
 
@@ -932,6 +946,9 @@ class ResetManager:
         if not getattr(self.bridge, "offboard_enabled", False):
             self.logger.debug("[RESCUE] skip: offboard is not enabled")
             return False
+        if getattr(self.bridge, "failsafe", False):
+            self.logger.warning("[RESCUE] skip: PX4 in failsafe — velocity commands ignored")
+            return False
 
         pos0 = self.bridge.get_gazebo_position()
         if not np.all(np.isfinite(pos0)):
@@ -1009,6 +1026,8 @@ class ResetManager:
             return "continuous"
         if reason in {"out_of_fence", "max_steps_near_fence_recentered"}:
             return "rescue_then_continuous"
+        if reason in {"px4_failsafe", "ekf_callbacks_dead"}:
+            return "hard_reset_fallback"
         return "hard_reset_fallback"
 
     def _is_continuous_reset_reason(self, reason: str) -> bool:

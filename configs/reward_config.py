@@ -5,6 +5,11 @@ from dataclasses import dataclass, field
 class RewardConfig:
     # Terminal rewards
     goal_xy_terminal_reward: float = 130.0
+    collision_penalty: float = -280.0
+    out_of_fence_penalty: float = -150.0
+    near_fence_terminal_penalty_factor: float = 0.8
+    fell_to_ground_penalty: float = -200.0
+    flipped_penalty: float = -200.0
     max_steps_penalty_pillars_near_goal: float = -200.0
     max_steps_penalty_pillars_far_goal: float = -190.0
     max_steps_penalty_no_pillars: float = -90.0

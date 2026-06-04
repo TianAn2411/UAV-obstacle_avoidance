@@ -139,6 +139,7 @@ class TrainManager:
                 self._reset_manager.hard_reset_fallback_episode_reset(reason, reset_t0, self._start)
                 new_pos = self.bridge.get_gazebo_position()
                 self._start = np.array([new_pos[0], new_pos[1], 0.0], dtype=np.float32)
+                
             self._goal = self._generate_new_goal(override_start=self._start)
             self._reset_manager.pre_episode_auto_yaw_to_goal(self._goal)
             self._pillar_manager.reset_episode(self._start, self._goal)
@@ -224,6 +225,35 @@ class TrainManager:
         """
         self._update_goal_xy_radius()
 
+        # Early exit: failsafe active before action is sent
+        if self.bridge.failsafe and self._step_count > 5:
+            self.logger.warning(
+                f"[STEP] env={self.env_id} px4_failsafe=True at step start "
+                f"(step={self._step_count}) — terminating episode"
+            )
+            obs = self._build_obs(
+                self.bridge.get_depth_84(),
+                self.bridge.get_ekf_position_enu(),
+                self.bridge.get_linear_velocity(),
+                self.bridge.get_yaw()[0],
+                self.bridge.get_angular_velocity(),
+            )
+            pos = self.bridge.get_gazebo_position().astype(np.float32)
+            if not np.all(np.isfinite(pos)):
+                pos = self._prev_pos.copy()
+            dist_xy = float(np.linalg.norm(self._goal[:2] - pos[:2]))
+            self._last_done_reason = "px4_failsafe"
+            self._reset_manager.on_episode_end("px4_failsafe")
+            self._logging_manager.record_episode_end(
+                done_reason="px4_failsafe",
+                episode_reward=self._ep_reward_sum,
+                steps=self._step_count + 1,
+                pos=pos,
+            )
+            return StepResult(obs=obs, reward=-1.0, terminated=True, truncated=False,
+                              info={"done_reason": "px4_failsafe", "pos": pos,
+                                    "dist_xy": dist_xy, "step_count": self._step_count})
+
         # 1. Compute smoothed velocity command
         pos_now = self.bridge.get_gazebo_position()
         alt = float(pos_now[2]) if np.all(np.isfinite(pos_now)) else 0.0
@@ -240,6 +270,13 @@ class TrainManager:
         # 2. Send velocity and tick
         self.bridge.send_velocity(action_out.vx, action_out.vy, action_out.vz, action_out.yaw_rate)
         self.bridge.tick(self.ecfg.dt)
+
+        if not self.bridge.is_px4_callbacks_healthy(max_est_flags_age=5.0):
+            age = time.monotonic() - self.bridge._last_estimator_flags_wall
+            self.logger.warning(
+                f"[STEP] env={self.env_id} estimator-flags stale for {age:.1f}s "
+                f"(step={self._step_count})"
+            )
 
         # 3. Read new state
         pos = self.bridge.get_gazebo_position().astype(np.float32)
@@ -641,6 +678,18 @@ class TrainManager:
         # Flipped
         if self.bridge.is_flipped():
             return True, False, "flipped"
+
+        # PX4 in failsafe — episode corrupted, terminate immediately
+        if self.bridge.failsafe and step_count > 5:
+            return True, False, "px4_failsafe"
+
+        # EKF callbacks dead — DDS stalled, hard reset needed
+        if not self.bridge.is_px4_callbacks_healthy(max_est_flags_age=15.0):
+            self.logger.warning(
+                f"[TERMINAL] env={self.env_id} ekf_callbacks_dead "
+                f"est_flags_age={time.monotonic() - self.bridge._last_estimator_flags_wall:.1f}s"
+            )
+            return True, False, "ekf_callbacks_dead"
 
         # Max steps (truncation)
         if step_count >= self.ecfg.max_steps - 1:

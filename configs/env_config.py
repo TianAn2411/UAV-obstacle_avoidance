@@ -54,7 +54,7 @@ class EnvConfig:
     yaw_rate_limit: float = 0.5
     action_smoothing: float = 0.35
     freeze_vz: bool = False  # Stage 0: lock vz=0, drone learns horizontal nav only
-    freeze_vz_hold_alt: float = 2.0  # target altitude (m) to hold when freeze_vz=True
+    freeze_vz_hold_alt: float = 3.2  # target altitude (m) to hold when freeze_vz=True
     freeze_vz_kp: float = 2.0        # P-gain for altitude hold controller
 
     # Altitude safe band
@@ -130,7 +130,7 @@ class EnvConfig:
     # Reset — hard reset periodicity (from old drone_env.py L36)
     hard_reset_every_episodes: int = 0
 
-    # Reset — rescue parameters (from old drone_env.py L78-92)
+
     use_rescue_after_out_of_fence: bool = True
     rescue_timeout_base_s: float = 4.0
     rescue_timeout_min_s: float = 8.0

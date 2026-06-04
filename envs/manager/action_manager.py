@@ -46,7 +46,11 @@ class ActionManager:
         target_vx = float(raw[0]) * max_vx
         target_vy = float(raw[1]) * max_vy
         # action[2] positive = fly up (ENU); bridge converts to PX4 NED internally
-        target_vz = float(raw[2]) * (cfg.vz_up_limit if raw[2] >= 0.0 else cfg.vz_down_limit)
+        if cfg.freeze_vz:
+            target_vz = 0.0
+            self._cmd_vel[2] = 0.0  # flush EMA buffer — prevents spike when vz unlocks
+        else:
+            target_vz = float(raw[2]) * (cfg.vz_up_limit if raw[2] >= 0.0 else cfg.vz_down_limit)
         target_yr = float(raw[3]) * cfg.yaw_rate_limit
 
         target_cmd = np.array([target_vx, target_vy, target_vz, target_yr], dtype=np.float32)

@@ -10,30 +10,26 @@ class DepthStateExtractor(BaseFeaturesExtractor):
         n_state = observation_space["state"].shape[0]
         depth_channels = observation_space["depth"].shape[0]
         assert depth_channels == 3, f"DepthStateExtractor expects depth channels=3, got {depth_channels}"
-        assert n_state == 20, f"DepthStateExtractor expects state dim=20, got {n_state}"
+        assert n_state == 46, f"DepthStateExtractor expects state dim=46, got {n_state}"
 
         # Nhánh CNN: Xử lý ảnh độ sâu (Depth Map) - Thường là 84x84
         self.cnn = nn.Sequential(
-            nn.Conv2d(3, 32, 8, stride=4), nn.ReLU(),
-            nn.Conv2d(32, 64, 4, stride=2), nn.ReLU(),
-            nn.Conv2d(64, 64, 3, stride=1), nn.ReLU(),
+            nn.Conv2d(3, 32, kernel_size=8, stride=4), nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=4, stride=2), nn.ReLU(),
+            nn.Conv2d(64, 64, kernel_size=3, stride=1), nn.ReLU(),
             nn.Flatten(),
+
         )
 
-        # Tính toán kích thước đầu ra của CNN để nối vào lớp Linear
-        with torch.no_grad():
-            dummy = torch.zeros(1, 3, 84, 84)
-            cnn_out = self.cnn(dummy).shape[1]
-
         # Lớp kết nối cho nhánh ảnh
-        self.cnn_fc = nn.Sequential(nn.Linear(cnn_out, 128), nn.ReLU())
+        self.cnn_fc = nn.Sequential(nn.Linear(3136, 256), nn.ReLU())
 
         # Lớp kết nối cho nhánh vector trạng thái
         self.state_fc = nn.Sequential(nn.Linear(n_state, 64), nn.ReLU())
 
         # Lớp tổng hợp (Fusion Layer): Kết hợp thông tin từ cả 2 nhánh
         self.head = nn.Sequential(
-            nn.Linear(128 + 64, features_dim), nn.ReLU()
+            nn.Linear(256 + 64, features_dim), nn.ReLU()
         )
 
     def forward(self, obs):

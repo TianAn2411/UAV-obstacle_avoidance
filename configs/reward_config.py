@@ -22,17 +22,8 @@ class RewardConfig:
     time_penalty_step350: float = -0.15
     time_penalty_step450: float = -0.20
 
-    # Ground penalty
-    ground_z_thresh: float = 0.3
-    ground_penalty_early: float = -2.0
-    ground_penalty_late: float = -6.0
-    ground_early_step_cutoff: int = 80
-
-    # Altitude band
-    alt_band_margin_low: float = 0.7
-    alt_band_margin_high: float = 0.5
-    alt_band_coef: float = 0.15
-    alt_below_min_coef: float = -1.0
+    # Altitude penalty (linear outside [alt_min, alt_max] from env_config)
+    alt_below_min_coef: float = -2.5
     alt_above_max_coef: float = -1.5
 
     # Action smoothness

@@ -3,7 +3,7 @@ from typing import Optional
 import numpy as np
 from obstacle_avoidance.configs.env_config import EnvConfig
 from obstacle_avoidance.configs.reward_config import RewardConfig
-
+import math
 
 @dataclass
 class RewardComponents:
@@ -105,14 +105,12 @@ class RewardManager:
         self._e = ecfg
         # Per-episode tracked state (reset by reset_episode)
         self._has_been_airborne: bool = False
-        self._low_alt_after_airborne_steps: int = 0
         self._prev_min_depth: float = float("inf")
         self._prev_horizontal_speed: float = 0.0
         self._was_near_obstacle: bool = False
 
     def reset_episode(self) -> None:
         self._has_been_airborne = False
-        self._low_alt_after_airborne_steps = 0
         self._prev_min_depth = float("inf")
         self._prev_horizontal_speed = 0.0
         self._was_near_obstacle = False
@@ -194,10 +192,6 @@ class RewardManager:
         self._prev_horizontal_speed = state.horizontal_speed
         if float(state.pos[2]) > self._e.airborne_z:
             self._has_been_airborne = True
-        if self._has_been_airborne and float(state.pos[2]) < 0.25:
-            self._low_alt_after_airborne_steps += 1
-        else:
-            self._low_alt_after_airborne_steps = 0
 
         c.total = (
             c.progress + c.time + c.velocity_goal + c.heading_goal
@@ -241,24 +235,12 @@ class RewardManager:
         return r
 
     def _reward_altitude(self, state: StepState) -> tuple[float, float]:
-        # Source: old drone_env.py L5034-5048
         z = float(state.pos[2])
-        r = self._r
-
-        ground = 0.0
-        if z < r.ground_z_thresh:
-            coef = r.ground_penalty_early if state.step_count < r.ground_early_step_cutoff else r.ground_penalty_late
-            ground = coef * (r.ground_z_thresh - z)
-
-        alt = 0.0
         if z < self._e.alt_min:
-            alt = r.alt_below_min_coef * (self._e.alt_min - z)
-        elif z > self._e.alt_max:
-            alt = r.alt_above_max_coef * (z - self._e.alt_max)
-        elif z > self._e.alt_min + r.alt_band_margin_low and z < self._e.alt_max - r.alt_band_margin_high:
-            alt = r.alt_band_coef * (z - self._e.alt_min)
-
-        return ground, alt
+            return 0.0, self._r.alt_below_min_coef * (self._e.alt_min - z)
+        if z > self._e.alt_max:
+            return 0.0, self._r.alt_above_max_coef * (z - self._e.alt_max)
+        return 0.0, 0.0
 
     def _reward_smooth(self, action: np.ndarray, prev_action: np.ndarray) -> float:
         # Source: old drone_env.py L5066
@@ -303,7 +285,7 @@ class RewardManager:
 
     def _reward_yaw_align(self, state: StepState) -> float:
         # Source: old drone_env.py L5127-5270
-        import math
+
         r = self._r
         yaw_error = state.yaw_error
         yaw_align_cos = float(math.cos(float(yaw_error)))

@@ -11,7 +11,7 @@ from obstacle_avoidance.utils.logger import setup_logger
 
 @dataclass
 class ResetDecision:
-    mode: str            # "continuous", "hard", "multi_env_fast", "rescue_then_continuous"
+    mode: str            # "continuous", "hard", "multi_env_fast", "rescue_then_continuous", "startup_arm"
     reason: str
     do_respawn_pillars: bool
 
@@ -57,6 +57,9 @@ class ResetManager:
 
         if base == "rescue_then_continuous":
             return ResetDecision(mode="rescue_then_continuous", reason=reason, do_respawn_pillars=True)
+
+        if base == "startup_arm":
+            return ResetDecision(mode="startup_arm", reason=reason, do_respawn_pillars=True)
 
         return ResetDecision(mode="hard", reason=reason, do_respawn_pillars=True)
 
@@ -693,6 +696,32 @@ class ResetManager:
         self.logger.error("[ARM STARTUP FAIL] arm attempts exhausted")
         return False
 
+    def startup_arm_episode_reset(self, start: np.ndarray) -> None:
+        """Lightweight cold-start: wait for gz_pose_ready, then arm and lift.
+        Skips the full hard-reset loop (disarm/teleport/EKF re-notify) since
+        PX4 just booted with VIO streaming already running.
+        """
+        t0 = time.monotonic()
+        while not getattr(self.bridge, "gz_pose_ready", False):
+            if time.monotonic() - t0 > 15.0:
+                self.logger.warning("[STARTUP ARM] gz_pose_ready never True after 15s, proceeding anyway")
+                break
+            self._idle_spin(duration=0.1)
+
+        arm_ok = self._arm_with_startup_retry(
+            start=start,
+            context="[STARTUP ARM]",
+            max_attempts=3,
+            retry_idle_s=2.0,
+        )
+        if not arm_ok:
+            self.logger.error("[STARTUP ARM] arm_and_takeoff failed, falling back to hard reset")
+            self.hard_reset_fallback_episode_reset("startup_arm_fallback", time.monotonic(), start)
+            self._idle_spin(0.3)  # give pose listener time to catch up before caller reads position
+            return
+
+        self._lift_warmup_before_episode(duration=self.ecfg.lift_warmup_time)
+
     def _mark_bridge_state_stale_after_hard_reset(self) -> None:
         """Invalidate cached arm/offboard flags. Source: old drone_env.py L3241."""
         if hasattr(self.bridge, "is_armed"):
@@ -974,6 +1003,8 @@ class ResetManager:
 
     def _classify_reset_action(self, reason: str) -> str:
         """Source: old drone_env.py L3684."""
+        if reason == "startup":
+            return "startup_arm"
         if reason in {"goal_xy", "max_steps", "collision", "goal_xy_wrong_altitude", "goal_xy_near_boundary"}:
             return "continuous"
         if reason in {"out_of_fence", "max_steps_near_fence_recentered"}:

@@ -14,15 +14,65 @@ vf_coef: 0.5
 max_grad_norm: 0.5
 
 # Training
-total_timesteps: 5_000_000
+total_timesteps: 10_000_000
 n_envs: 1
 log_dir: "runs/"
 checkpoint_freq: 50_000
 
-# Curriculum stages (num_pillars per stage)
+# Curriculum stages
+# Optional env_overrides keys map directly to EnvConfig fields — any field can be overridden.
+# Noise defaults (0.0 = disabled). Suggested real-hardware values for reference:
+#   obs_noise_vel_std:     0.05   (m/s)
+#   obs_noise_ang_vel_std: 0.01   (rad/s)
+#   obs_noise_pos_std:     0.10   (m)
+#   obs_noise_yaw_std:     0.03   (rad)
 curriculum:
-  - {stage: 1, num_pillars: 0,  min_steps: 500_000}
-  - {stage: 2, num_pillars: 2,  min_steps: 500_000}
-  - {stage: 3, num_pillars: 5,  min_steps: 500_000}
-  - {stage: 4, num_pillars: 10, min_steps: 500_000}
-  - {stage: 5, num_pillars: 20, min_steps: 0}
+  - stage: 0
+    num_pillars: 0
+    min_steps: 500_000
+    freeze_vz: true              # horizontal nav only — vz locked to 0
+    obs_noise_vel_std: 0.0
+    obs_noise_ang_vel_std: 0.0
+    obs_noise_pos_std: 0.0
+    obs_noise_yaw_std: 0.0
+
+  - stage: 1
+    num_pillars: 0
+    min_steps: 500_000
+    freeze_vz: false             # vz unlocked — full altitude control
+    obs_noise_vel_std: 0.0
+    obs_noise_ang_vel_std: 0.0
+    obs_noise_pos_std: 0.0
+    obs_noise_yaw_std: 0.0
+
+  - stage: 2
+    num_pillars: 3
+    min_steps: 500_000
+    obs_noise_vel_std: 0.02
+    obs_noise_ang_vel_std: 0.002
+    obs_noise_pos_std: 0.05
+    obs_noise_yaw_std: 0.01
+
+  - stage: 3
+    num_pillars: 5
+    min_steps: 500_000
+    obs_noise_vel_std: 0.04
+    obs_noise_ang_vel_std: 0.004
+    obs_noise_pos_std: 0.1
+    obs_noise_yaw_std: 0.02
+
+  - stage: 4
+    num_pillars: 10
+    min_steps: 500_000
+    obs_noise_vel_std: 0.05
+    obs_noise_ang_vel_std: 0.005
+    obs_noise_pos_std: 0.15
+    obs_noise_yaw_std: 0.03
+
+  - stage: 5
+    num_pillars: 20
+    min_steps: 0
+    obs_noise_vel_std: 0.0525
+    obs_noise_ang_vel_std: 0.00525
+    obs_noise_pos_std: 0.1525
+    obs_noise_yaw_std: 0.0325

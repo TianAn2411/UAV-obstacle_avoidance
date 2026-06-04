@@ -17,6 +17,7 @@ from utils.logger import setup_logger
 
 from cv_bridge import CvBridge
 import threading
+import concurrent.futures
 
 from px4_msgs.msg import (
     OffboardControlMode,
@@ -32,7 +33,7 @@ from px4_msgs.msg import (
     EstimatorStatusFlags,
     FailsafeFlags,
 )
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, LaserScan
 try:
     from geometry_msgs.msg import Pose as GeometryPose
 except Exception:
@@ -127,15 +128,17 @@ class ROSBridge(Node):
 
         self.current_amsl_alt = 0.0
         self.depth_raw = np.ones((84, 84), dtype=np.float32) * 10.0
+        self.lidar_raw = np.ones(1080, dtype=np.float32) * 30.0  # default: max range (no obstacle)
 
         self.gz_pos = np.zeros(3, dtype=np.float32)
         self.gz_quat = [1.0, 0.0, 0.0, 0.0]  # [w, x, y, z] ENU/FLU, identity default
-        self.gz_pose_ready = False
+        self.gz_pose_ready = True  # stream spawn-origin pose immediately; overwritten on first callback
         self.gz_pose_stamp = 0.0
-        self.gz_pose_source = "none"
+        self.gz_pose_source = "default_spawn"
         self._gz_lock = threading.Lock()
 
         self.px4_lpos = np.zeros(3, dtype=np.float32)
+        self.angular_velocity = np.zeros(3, dtype=np.float32)  # FRD body rates (rad/s)
         self.px4_vel = np.zeros(3, dtype=np.float32)
         self._px4_vel_ready = False
         self._teleport_zero_vel_countdown = 0
@@ -145,6 +148,9 @@ class ROSBridge(Node):
         self._last_gz_pos_for_vo_vel = None
         self._last_gz_vel_stamp_s = None
         self._vo_velocity_max_m_s = 15.0
+        self._vo_publish_lock = threading.Lock()
+        self._vo_stop = False
+        self._vo_thread = None
 
         self._last_status_wall = 0.0
         self._last_control_mode_wall = 0.0
@@ -204,13 +210,20 @@ class ROSBridge(Node):
             self.qos,
         )
 
-        # Timer chạy ở tần số 30Hz (~0.033s) để liên tục nạp tọa độ cho EKF
-        self.vo_timer = self.create_timer(1.0 / 30.0, self._publish_visual_odometry)
+        # Dedicated thread streams VIO at 30Hz independent of rclpy spin_once,
+        # so PX4 EKF always gets odometry even during blocking gz service calls.
+        self._start_vo_thread()
 
         self.depth_sub = self.create_subscription(
             Image,
             "/camera/depth/image_raw",
             self._depth_cb,
+            self.qos,
+        )
+        self.lidar_sub = self.create_subscription(
+            LaserScan,
+            "/lidar/scan",
+            self._lidar_cb,
             self.qos,
         )
 
@@ -225,6 +238,13 @@ class ROSBridge(Node):
             VehicleLocalPosition,
             self._px4_topic("/fmu/out/vehicle_local_position"),
             self._local_pos_cb,
+            self.qos,
+        )
+
+        self.create_subscription(
+            VehicleOdometry,
+            f"{self._px4_ns}/fmu/out/vehicle_odometry",
+            self._odom_cb,
             self.qos,
         )
 
@@ -306,6 +326,42 @@ class ROSBridge(Node):
             self._stall_pos_locked = False
             self.last_keepalive_stale_age = 0.0
         # print(f"[KEEPALIVE] enabled={self.keepalive_enabled} model={self.model_name}")
+
+    def _start_vo_thread(self):
+        if self._vo_thread is not None and self._vo_thread.is_alive():
+            return
+        self._vo_stop = False
+        self._vo_thread = threading.Thread(
+            target=self._vo_thread_worker,
+            name=f"VIOPublisher_{self.model_name}",
+            daemon=True,
+        )
+        self._vo_thread.start()
+
+    def _vo_thread_worker(self):
+        """Publish VehicleOdometry at 30Hz from a dedicated thread.
+
+        Independent of rclpy spin_once so VIO never drops during blocking gz
+        service RPCs (teleport, pillar spawn) or CPU-starved spin delays.
+        Serialized with explicit burst callers via _vo_publish_lock.
+        """
+        period = 1.0 / 30.0
+        next_t = time.monotonic()
+        while not self._vo_stop:
+            try:
+                with self._vo_publish_lock:
+                    self._publish_visual_odometry()
+            except Exception as exc:
+                try:
+                    self.logger.warning(f"[VO THREAD] publish failed: {exc}")
+                except Exception:
+                    pass
+            next_t += period
+            sleep_s = next_t - time.monotonic()
+            if sleep_s > 0.0:
+                time.sleep(sleep_s)
+            elif sleep_s < -period:
+                next_t = time.monotonic()
 
     def _start_offboard_keepalive_thread(self):
         if self._keepalive_thread is not None:
@@ -475,7 +531,8 @@ class ROSBridge(Node):
         t0 = time.monotonic()
         while time.monotonic() - t0 < duration:
             try:
-                self._publish_visual_odometry()
+                with self._vo_publish_lock:
+                    self._publish_visual_odometry()
             except Exception as exc:
                 self.get_logger().warning(f"[EV PRIME] publish failed: {exc}")
             self.tick(0.02)
@@ -485,10 +542,17 @@ class ROSBridge(Node):
         self._keepalive_stop = True
         self._stall_pos_locked = False
         self.last_keepalive_stale_age = 0.0
+        self._vo_stop = True
 
         if self._keepalive_thread is not None:
             try:
                 self._keepalive_thread.join(timeout=1.0)
+            except Exception:
+                pass
+
+        if self._vo_thread is not None:
+            try:
+                self._vo_thread.join(timeout=0.5)
             except Exception:
                 pass
 
@@ -510,10 +574,10 @@ class ROSBridge(Node):
         return env
 
     def _invalidate_gz_pose_cache(self):
+        # Keep gz_pose_ready=True so VIO never stops during teleport — stream last known pose.
         with self._gz_lock:
-            self.gz_pose_ready = False
             self.gz_pose_stamp = 0.0
-            self.gz_pose_source = "none"
+            self.gz_pose_source = "stale_pre_teleport"
 
     def _px4_topic(self, topic):
         if self.px4_ns:
@@ -654,6 +718,13 @@ class ROSBridge(Node):
         self.px4_lpos = np.array([msg.x, msg.y, msg.z], dtype=np.float32)
         self.px4_vel = np.array([msg.vx, msg.vy, msg.vz], dtype=np.float32)
         self._px4_vel_ready = True
+
+    def _odom_cb(self, msg):
+        # angular_velocity is FRD body frame (rad/s); NaN when EKF not ready
+        raw = np.array(msg.angular_velocity, dtype=np.float32)
+        if np.any(np.isnan(raw)):
+            return  # keep last known-good value
+        self.angular_velocity = raw
 
     def _global_pos_cb(self, msg):
         self.current_amsl_alt = msg.alt
@@ -809,7 +880,11 @@ class ROSBridge(Node):
         return max(1, int(time.monotonic() * 1_000_000))
 
     def _publish_visual_odometry(self):
-        """Liên tục đẩy Ground Truth Position + Orientation từ Gazebo vào PX4 EKF (NED + EV yaw)."""
+        """Push Ground Truth Position + Orientation từ Gazebo vào PX4 EKF (NED + EV yaw).
+
+        Called from _vo_thread_worker (30Hz) and optionally from burst callers on the
+        main thread; _vo_publish_lock serializes concurrent invocations.
+        """
         if not self.gz_pose_ready:
             return
 
@@ -907,7 +982,8 @@ class ROSBridge(Node):
         Velocity cache is reset by notify_ekf_teleport() before these bursts.
         """
         for _ in range(count):
-            self._publish_visual_odometry()
+            with self._vo_publish_lock:
+                self._publish_visual_odometry()
             rclpy.spin_once(self, timeout_sec=interval)
 
     def notify_ekf_teleport(self, prime_count=30, reset_count=100, interval=0.01):
@@ -1399,8 +1475,31 @@ class ROSBridge(Node):
         yaw_enu = -float(self.yaw) + (math.pi / 2.0)
         return yaw_enu, 0.0
 
+    def get_angular_velocity(self) -> np.ndarray:
+        return self.angular_velocity.copy()  # FRD body rates (rad/s)
+
+    def get_ekf_position_enu(self) -> np.ndarray:
+        # px4_lpos is NED (North, East, Down) — convert to ENU (East, North, Up)
+        return np.array([
+            float(self.px4_lpos[1]),   # East  ← NED[1]
+            float(self.px4_lpos[0]),   # North ← NED[0]
+            -float(self.px4_lpos[2]),  # Up    ← -NED[2]
+        ], dtype=np.float32)
+
     def get_depth_84(self):
         return np.expand_dims(self.depth_raw, axis=0)
+
+    def _lidar_cb(self, msg):
+        ranges = np.array(msg.ranges, dtype=np.float32)
+        # posinf = beam exceeded max range → clear space
+        ranges[np.isposinf(ranges)] = 30.0
+        # nan / neginf / <=0 = signal error → treat as close obstacle (conservative)
+        bad = np.isnan(ranges) | np.isneginf(ranges) | (ranges <= 0.0)
+        ranges[bad] = 0.1
+        self.lidar_raw = np.clip(ranges, 0.1, 30.0)
+
+    def get_lidar_scan(self) -> np.ndarray:
+        return self.lidar_raw.copy()  # (1080,) float32, range [0.1, 30.0] m
 
     def is_flipped(self):
         roll_deg = abs(math.degrees(self.roll))
@@ -1674,7 +1773,7 @@ class ROSBridge(Node):
                 self.logger.debug(f"[ARM] forcing takeoff (velocity)... current alt={gz_alt:.2f}m")
                 last_print_t = time.monotonic()
 
-            if gz_alt >= 2.0:
+            if gz_alt >= 3.0:
                 break
 
         # Settle thêm 1 chút cho ổn định bằng cách phanh lại (vz = 0)
@@ -1699,6 +1798,31 @@ class ROSBridge(Node):
     # Gazebo helpers
     # ============================================================
     #
+    def _gz_spin_wrap(self, fn, *args, max_wait_s=3.0, **kwargs):
+        """Run fn(*args, **kwargs) in a background thread while keeping rclpy spinning.
+
+        Prevents gz transport RPCs and subprocess.run calls from starving the ROS
+        executor: without this, vo_timer and PX4 callbacks drop during teleport /
+        pillar-spawn operations, causing EKF time stalls and KEEPALIVE STALE HOVER
+        warnings when training with 2+ envs.
+
+        Returns fn's return value, or None if max_wait_s is exceeded before fn returns.
+        Exceptions raised by fn are re-raised in the caller.
+        """
+        ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        fut = ex.submit(fn, *args, **kwargs)
+        ex.shutdown(wait=False)
+        deadline = time.monotonic() + float(max_wait_s)
+        while not fut.done():
+            rclpy.spin_once(self, timeout_sec=0.005)
+            if time.monotonic() > deadline:
+                self.logger.warning(
+                    f"[GZ SPIN WRAP] {getattr(fn, '__name__', str(fn))} still running "
+                    f"after {max_wait_s:.1f}s — proceeding without result"
+                )
+                return None
+        return fut.result()
+
     def teleport_drone(self, pos):
         """
         Teleport model trong đúng GZ_PARTITION.
@@ -1737,17 +1861,18 @@ class ROSBridge(Node):
         transport_ok = False
         if self.gz_client is not None and self.gz_client.available():
             try:
-                transport_ok = bool(
-                    self.gz_client.set_pose(
-                        world_name=self.world_name,
-                        name=self.model_name,
-                        x=x,
-                        y=y,
-                        z=z,
-                        yaw=0.0,
-                        timeout_ms=2000,
-                    )
+                _sp_result = self._gz_spin_wrap(
+                    self.gz_client.set_pose,
+                    world_name=self.world_name,
+                    name=self.model_name,
+                    x=x,
+                    y=y,
+                    z=z,
+                    yaw=0.0,
+                    timeout_ms=2000,
+                    max_wait_s=2.5,
                 )
+                transport_ok = bool(_sp_result) if _sp_result is not None else False
                 if transport_ok:
                     self.logger.debug(
                         f"[GZ TRANSPORT] set_pose ok world={self.world_name} model={self.model_name}"
@@ -1772,14 +1897,22 @@ class ROSBridge(Node):
             return pose_ok
 
         try:
-            result = subprocess.run(
+            result = self._gz_spin_wrap(
+                subprocess.run,
                 cmd,
                 check=False,
                 capture_output=True,
                 text=True,
                 timeout=5.0,
                 env=self._gz_env(),
+                max_wait_s=6.0,
             )
+            if result is None:
+                self.logger.error(
+                    f"[Teleport] CLI spin_wrap timed out "
+                    f"model={self.model_name} GZ_PARTITION={self.gz_partition}"
+                )
+                return False
         except Exception as exc:
             self.logger.error(
                 f"[Teleport] exception "
@@ -2172,11 +2305,13 @@ class Spawner:
     def spawn_pillar(self, name, x, y, radius=0.3, height=6.0):
         if spawn_world is not None:
             try:
-                ok = spawn_world.spawn_pillar(
+                ok = self._gz_spin_wrap(
+                    spawn_world.spawn_pillar,
                     name=name, x=x, y=y, radius=radius, height=height,
-                    world_name=self.world_name, env=self._gz_env()
+                    world_name=self.world_name, env=self._gz_env(),
+                    max_wait_s=18.0,
                 )
-                return bool(ok)
+                return bool(ok) if ok is not None else False
             except Exception as exc:
                 self.logger.warning(f"[SPAWNER SPAWN FAIL] name={name} reason={exc}")
                 return False
@@ -2185,15 +2320,17 @@ class Spawner:
     def move_pillar(self, name, x, y, z):
         if spawn_world is not None:
             try:
-                ok = spawn_world.move_entity(
+                ok = self._gz_spin_wrap(
+                    spawn_world.move_entity,
                     name=name,
                     x=x,
                     y=y,
                     z=z,
                     world_name=self.world_name,
                     env=self._gz_env(),
+                    max_wait_s=4.0,
                 )
-                return bool(ok)
+                return bool(ok) if ok is not None else False
             except Exception as exc:
                 self.logger.warning(f"[SPAWNER MOVE FAIL] name={name} reason={exc}")
                 return False
@@ -2207,17 +2344,24 @@ class Spawner:
         if spawn_world is None:
             raise RuntimeError("spawn_world module is not available")
         timeout_ms = int(os.environ.get("GZ_SET_POSE_VECTOR_TIMEOUT_MS", "2500"))
-        return spawn_world.move_entities_batch(
+        return self._gz_spin_wrap(
+            spawn_world.move_entities_batch,
             poses=poses,
             world_name=self.world_name,
             env=self._gz_env(),
             timeout_ms=timeout_ms,
+            max_wait_s=float(timeout_ms) / 1000.0 + 1.5,
         )
 
     def _scene_entity_names(self, timeout_ms=3000):
         if self.gz_client is not None and self.gz_client.available():
             try:
-                names = self.gz_client.scene_entity_names(self.world_name, timeout_ms=timeout_ms)
+                names = self._gz_spin_wrap(
+                    self.gz_client.scene_entity_names,
+                    self.world_name,
+                    timeout_ms=timeout_ms,
+                    max_wait_s=float(timeout_ms) / 1000.0 + 1.0,
+                )
                 if names is not None:
                     self.logger.debug(
                         f"[GZ TRANSPORT] scene_entity_names ok world={self.world_name} count={len(names)}"
@@ -2245,9 +2389,14 @@ class Spawner:
             "--req",
             "",
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, env=self._gz_env(), check=False)
-        if result.returncode != 0:
-            self.logger.warning(f"[SPAWNER VERIFY] scene/info failed returncode={result.returncode}")
+        result = self._gz_spin_wrap(
+            subprocess.run, cmd,
+            capture_output=True, text=True, env=self._gz_env(), check=False,
+            max_wait_s=float(timeout_ms) / 1000.0 + 1.0,
+        )
+        if result is None or result.returncode != 0:
+            rc = result.returncode if result is not None else "timeout"
+            self.logger.warning(f"[SPAWNER VERIFY] scene/info failed returncode={rc}")
             return set()
         return set(re.findall(r'name:\s*"([^"]+)"', result.stdout or ""))
 

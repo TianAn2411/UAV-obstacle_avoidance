@@ -7,8 +7,18 @@ class EnvConfig:
     depth_shape: tuple = (3, 84, 84)       # depth obs: 3 stacked 84x84 frames
     depth_min: float = 0.0
     depth_max: float = 10.0
-    state_dim: int = 20
+    state_dim: int = 46   # 7 proprioception + 3 body-frame goal + 36 LiDAR sectors
     action_dim: int = 4                    # [vx, vy, vz, yaw_rate]
+    # Sim-to-real observation noise: x_noisy = x + N(0, σ²), applied in
+    # train_manager.py:_build_state_vector — only the policy observation is noised,
+    # GT position is still used for rewards/collision/fence. 0.0 = disabled.
+    lidar_num_sectors: int = 36        # angular sectors across 270° sweep (7.5° each)
+    lidar_min_range: float = 0.1       # clip floor (m) — also used for signal-error fill
+    lidar_max_range: float = 30.0      # clip ceiling (m)
+    obs_noise_pos_std: float = 0.0    # σ position (m)   — real VIO/GPS: 0.1–0.3
+    obs_noise_vel_std: float = 0.0    # σ velocity (m/s) — real EKF:     0.05–0.15
+    obs_noise_yaw_std: float = 0.0    # σ yaw (rad)      — real IMU:     0.02–0.08
+    obs_noise_ang_vel_std: float = 0.0  # σ angular rate (rad/s) — real IMU gyro: 0.005–0.02
 
     # Mission geometry
     start: list = field(default_factory=lambda: [0.0, 0.0, 0.0])
@@ -43,6 +53,7 @@ class EnvConfig:
     vz_down_limit: float = 0.6
     yaw_rate_limit: float = 0.5
     action_smoothing: float = 0.35
+    freeze_vz: bool = False  # Stage 0: lock vz=0, drone learns horizontal nav only
 
     # Altitude safe band
     alt_min: float = 0.8

@@ -1,0 +1,2032 @@
+{
+  "version": "1.0.0",
+  "project": {
+    "name": "obstacle_avoidance",
+    "languages": [
+      "Python",
+      "YAML"
+    ],
+    "frameworks": [
+      "stable-baselines3",
+      "PX4 SITL",
+      "Gazebo",
+      "ROS 2",
+      "gymnasium"
+    ],
+    "description": "PPO-based drone obstacle avoidance RL training system using PX4 SITL and Gazebo simulation with curriculum learning across 5 stages.",
+    "analyzedAt": "2026-06-03T07:13:33Z",
+    "gitCommitHash": "85df8c2281c2466b30a121b22b0bf33dc69bcfe4"
+  },
+  "nodes": [
+    {
+      "id": "file:__init__.py",
+      "type": "file",
+      "name": "__init__.py",
+      "filePath": "__init__.py",
+      "summary": "Top-level package marker for the obstacle_avoidance project root, enabling Python package imports.",
+      "tags": [
+        "entry-point",
+        "barrel",
+        "package"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:.understand-anything/.understandignore",
+      "type": "file",
+      "name": ".understandignore",
+      "filePath": ".understand-anything/.understandignore",
+      "summary": "Ignore pattern file for the understand-anything analysis tool, specifying paths and files to exclude from the knowledge graph scan.",
+      "tags": [
+        "configuration",
+        "tooling"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:configs/__init__.py",
+      "type": "file",
+      "name": "__init__.py",
+      "filePath": "configs/__init__.py",
+      "summary": "Package marker for the configs module, enabling imports from the configs directory.",
+      "tags": [
+        "barrel",
+        "package"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:configs/env_config.py",
+      "type": "file",
+      "name": "env_config.py",
+      "filePath": "configs/env_config.py",
+      "summary": "Defines the EnvConfig dataclass holding all environment parameters: observation shapes, action limits, fence bounds, goal scheduling, reset timeouts, depth camera crop settings, and multi-env fast-reset configuration.",
+      "tags": [
+        "configuration",
+        "data-model",
+        "type-definition"
+      ],
+      "complexity": "moderate",
+      "languageNotes": "Pure Python dataclass with no methods, serving as a plain-old-data configuration container for the RL environment."
+    },
+    {
+      "id": "class:configs/env_config.py:EnvConfig",
+      "type": "class",
+      "name": "EnvConfig",
+      "filePath": "configs/env_config.py",
+      "lineRange": [
+        5,
+        132
+      ],
+      "summary": "Comprehensive configuration dataclass with ~70 fields covering depth observation shape, velocity limits, goal distance scheduling, fence boundaries, takeoff assist, multi-env reset parameters, and rescue timeout tuning.",
+      "tags": [
+        "configuration",
+        "data-model"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:configs/pillar_config.py",
+      "type": "file",
+      "name": "pillar_config.py",
+      "filePath": "configs/pillar_config.py",
+      "summary": "Defines the PillarConfig dataclass containing obstacle pillar spawn parameters, collision margins, bypass subgoal geometry, ring detection settings, and near-miss detection thresholds.",
+      "tags": [
+        "configuration",
+        "data-model"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "class:configs/pillar_config.py:PillarConfig",
+      "type": "class",
+      "name": "PillarConfig",
+      "filePath": "configs/pillar_config.py",
+      "lineRange": [
+        5,
+        65
+      ],
+      "summary": "Dataclass encapsulating all pillar obstacle parameters: spawn count, radii/height ranges, corridor geometry, collision trigger radius, heading-based collision detection, bypass subgoal margins, and ring subgoal settings.",
+      "tags": [
+        "configuration",
+        "data-model"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "config:configs/ppo_config.yaml",
+      "type": "config",
+      "name": "ppo_config.yaml",
+      "filePath": "configs/ppo_config.yaml",
+      "summary": "YAML configuration file for the PPO training run, specifying algorithm hyperparameters (learning rate, gamma, GAE lambda, clip range), training budget (total_timesteps, n_envs), logging directory, checkpoint frequency, and curriculum stage definitions.",
+      "tags": [
+        "configuration",
+        "ci-cd",
+        "reinforcement-learning"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:configs/reward_config.py",
+      "type": "file",
+      "name": "reward_config.py",
+      "filePath": "configs/reward_config.py",
+      "summary": "Defines the RewardConfig dataclass with over 100 reward shaping coefficients for stage 1 and stage 2 training: goal progress, heading alignment, obstacle clearance, bypass subgoal, ring subgoal, time penalty, altitude shaping, and post-pillar behavior rewards.",
+      "tags": [
+        "configuration",
+        "data-model",
+        "reinforcement-learning"
+      ],
+      "complexity": "complex",
+      "languageNotes": "Extremely dense parameter file reflecting the complexity of staged curriculum reward engineering."
+    },
+    {
+      "id": "class:configs/reward_config.py:RewardConfig",
+      "type": "class",
+      "name": "RewardConfig",
+      "filePath": "configs/reward_config.py",
+      "lineRange": [
+        5,
+        197
+      ],
+      "summary": "Dataclass holding all reward shaping hyperparameters organized by curriculum stage, covering terminal rewards, progress coefficients, obstacle approach penalties, subgoal bonuses, and yaw alignment rewards.",
+      "tags": [
+        "configuration",
+        "reinforcement-learning"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:envs/__init__.py",
+      "type": "file",
+      "name": "__init__.py",
+      "filePath": "envs/__init__.py",
+      "summary": "Package marker for the envs module exposing environment classes for import.",
+      "tags": [
+        "barrel",
+        "package"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:envs/drone_env.py",
+      "type": "file",
+      "name": "drone_env.py",
+      "filePath": "envs/drone_env.py",
+      "summary": "Defines DroneObstacleEnv, the thin Gym-compatible environment wrapper that instantiates config objects and a TrainManager, then delegates reset/step/close calls to it.",
+      "tags": [
+        "api-handler",
+        "service"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "class:envs/drone_env.py:DroneObstacleEnv",
+      "type": "class",
+      "name": "DroneObstacleEnv",
+      "filePath": "envs/drone_env.py",
+      "lineRange": [
+        11,
+        46
+      ],
+      "summary": "Gym environment subclass implementing reset, step, and close by delegating to TrainManager; defines a Dict observation space with depth image and state vector sub-spaces.",
+      "tags": [
+        "api-handler",
+        "service"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:envs/manager/__init__.py",
+      "type": "file",
+      "name": "__init__.py",
+      "filePath": "envs/manager/__init__.py",
+      "summary": "Package marker for the envs.manager sub-package containing all environment manager components.",
+      "tags": [
+        "barrel",
+        "package"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:envs/manager/action_manager.py",
+      "type": "file",
+      "name": "action_manager.py",
+      "filePath": "envs/manager/action_manager.py",
+      "summary": "Implements ActionManager, which translates raw PPO policy actions into smoothed, clipped velocity commands (vx, vy, vz, yaw_rate) via exponential moving average, and wraps the output as an ActionOutput dataclass.",
+      "tags": [
+        "service",
+        "middleware"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "class:envs/manager/action_manager.py:ActionManager",
+      "type": "class",
+      "name": "ActionManager",
+      "filePath": "envs/manager/action_manager.py",
+      "lineRange": [
+        14,
+        88
+      ],
+      "summary": "Converts normalized policy action vectors to smoothed velocity commands using configurable per-axis limits and an EMA smoothing coefficient from EnvConfig.",
+      "tags": [
+        "service",
+        "middleware"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:envs/manager/logging_manager.py",
+      "type": "file",
+      "name": "logging_manager.py",
+      "filePath": "envs/manager/logging_manager.py",
+      "summary": "Implements LoggingManager, which records per-step telemetry, per-episode summaries, reward component breakdowns, k-step aggregate metrics, and CSV episode logs with log file rotation.",
+      "tags": [
+        "service",
+        "utility",
+        "monitoring"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "class:envs/manager/logging_manager.py:LoggingManager",
+      "type": "class",
+      "name": "LoggingManager",
+      "filePath": "envs/manager/logging_manager.py",
+      "lineRange": [
+        51,
+        591
+      ],
+      "summary": "Full-featured logging component that maintains step-level debug logs, episode summary CSV files with reward decomposition, k-step periodic metrics, and rotating log files per environment instance.",
+      "tags": [
+        "service",
+        "monitoring"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:envs/manager/pillar_manager.py",
+      "type": "file",
+      "name": "pillar_manager.py",
+      "filePath": "envs/manager/pillar_manager.py",
+      "summary": "Implements PillarManager, which handles per-episode obstacle pillar spawning, spatial state tracking (nearest distance, heading alignment), collision detection, bypass and ring subgoal management, and attention/post-pillar reward computation.",
+      "tags": [
+        "service",
+        "simulation"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "class:envs/manager/pillar_manager.py:PillarManager",
+      "type": "class",
+      "name": "PillarManager",
+      "filePath": "envs/manager/pillar_manager.py",
+      "lineRange": [
+        25,
+        1105
+      ],
+      "summary": "Core obstacle management class that spawns and repositions pillars via Spawner, tracks per-pillar pass/bypass/ring states, detects soft and hard collisions, and computes attention and post-pillar reward signals each step.",
+      "tags": [
+        "service",
+        "simulation"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:envs/manager/reset_manager.py",
+      "type": "file",
+      "name": "reset_manager.py",
+      "filePath": "envs/manager/reset_manager.py",
+      "summary": "Implements ResetManager, which classifies reset triggers, selects between continuous, multi-env fast, hard, and rescue reset strategies, and orchestrates the full episode reset sequence including teleportation, EKF convergence wait, and arm/takeoff.",
+      "tags": [
+        "service",
+        "simulation"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "class:envs/manager/reset_manager.py:ResetManager",
+      "type": "class",
+      "name": "ResetManager",
+      "filePath": "envs/manager/reset_manager.py",
+      "lineRange": [
+        19,
+        1039
+      ],
+      "summary": "Orchestrates multi-strategy episode resets: classifies the reason (collision, timeout, OOF), then executes continuous-reset, multi-env fast-recover, hard-reset-fallback, or rescue-then-continuous paths, handling drone teleportation, EKF settling, and arm/offboard setup.",
+      "tags": [
+        "service",
+        "simulation"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:envs/manager/reward_manager.py",
+      "type": "file",
+      "name": "reward_manager.py",
+      "filePath": "envs/manager/reward_manager.py",
+      "summary": "Implements RewardManager, which computes the full per-step reward as a sum of shaped components: progress, time penalty, altitude banding, action smoothness, velocity-to-goal, heading alignment, spatial penalties, obstacle clearance, subgoal bonuses, and terminal signals.",
+      "tags": [
+        "service",
+        "reinforcement-learning"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "class:envs/manager/reward_manager.py:RewardManager",
+      "type": "class",
+      "name": "RewardManager",
+      "filePath": "envs/manager/reward_manager.py",
+      "lineRange": [
+        98,
+        587
+      ],
+      "summary": "Calculates composite reward signals by invoking over 15 named sub-reward methods differentiated by curriculum stage (stage1/stage2), using EnvConfig and RewardConfig for all thresholds and coefficients.",
+      "tags": [
+        "service",
+        "reinforcement-learning"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:envs/manager/train_manager.py",
+      "type": "file",
+      "name": "train_manager.py",
+      "filePath": "envs/manager/train_manager.py",
+      "summary": "Implements TrainManager, the central orchestrator that ties together all sub-managers (action, pillar, reset, reward, logging) to run step_process and reset loops, manage goal scheduling, build observations, and advance the curriculum stage.",
+      "tags": [
+        "service",
+        "entry-point"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "class:envs/manager/train_manager.py:TrainManager",
+      "type": "class",
+      "name": "TrainManager",
+      "filePath": "envs/manager/train_manager.py",
+      "lineRange": [
+        30,
+        686
+      ],
+      "summary": "Top-level environment step-loop orchestrator: builds observations (stacked depth frames + 20-dim state vector), dispatches actions via ActionManager, computes rewards via RewardManager, manages pillar obstacles via PillarManager, performs resets via ResetManager, and logs everything via LoggingManager.",
+      "tags": [
+        "service",
+        "entry-point"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:envs/monitor.py",
+      "type": "file",
+      "name": "monitor.py",
+      "filePath": "envs/monitor.py",
+      "summary": "Implements TrainingMonitor, a stable-baselines3 BaseCallback subclass that logs training progress metrics, episode summaries, and curriculum stage information to TensorBoard and a progress CSV during PPO training.",
+      "tags": [
+        "monitoring",
+        "service"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "class:envs/monitor.py:TrainingMonitor",
+      "type": "class",
+      "name": "TrainingMonitor",
+      "filePath": "envs/monitor.py",
+      "lineRange": [
+        14,
+        295
+      ],
+      "summary": "SB3 BaseCallback that hooks into training start, each step, and training end to emit TensorBoard scalars, CSV progress rows, and episode summaries for curriculum stage tracking.",
+      "tags": [
+        "monitoring",
+        "service"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:envs/policy.py",
+      "type": "file",
+      "name": "policy.py",
+      "filePath": "envs/policy.py",
+      "summary": "Defines DepthStateExtractor, a custom stable-baselines3 feature extractor that fuses 84x84 3-stacked depth camera frames through a CNN with a 20-dim state vector through a linear layer into a combined latent representation.",
+      "tags": [
+        "data-model",
+        "reinforcement-learning"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "class:envs/policy.py:DepthStateExtractor",
+      "type": "class",
+      "name": "DepthStateExtractor",
+      "filePath": "envs/policy.py",
+      "lineRange": [
+        5,
+        45
+      ],
+      "summary": "Custom BaseFeaturesExtractor combining a 3-layer CNN for depth image processing with an MLP for state vector encoding; outputs a concatenated feature vector used by the PPO actor-critic heads.",
+      "tags": [
+        "data-model",
+        "reinforcement-learning"
+      ],
+      "complexity": "moderate",
+      "languageNotes": "Implements SB3's BaseFeaturesExtractor protocol for multi-modal observation fusion."
+    },
+    {
+      "id": "file:safety/__init__.py",
+      "type": "file",
+      "name": "__init__.py",
+      "filePath": "safety/__init__.py",
+      "summary": "Package marker for the safety module containing formal verification components.",
+      "tags": [
+        "barrel",
+        "package"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:safety/z3_shield.py",
+      "type": "file",
+      "name": "z3_shield.py",
+      "filePath": "safety/z3_shield.py",
+      "summary": "Placeholder or stub file for a Z3-based safety shield intended to formally verify or filter unsafe drone actions at runtime.",
+      "tags": [
+        "safety",
+        "placeholder"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:train.py",
+      "type": "file",
+      "name": "train.py",
+      "filePath": "train.py",
+      "summary": "Main PPO training entry point: parses CLI arguments and YAML config, constructs vectorized DroneObstacleEnv environments with curriculum settings, instantiates or resumes a stable-baselines3 PPO agent with the custom DepthStateExtractor policy, and runs the training loop with checkpointing.",
+      "tags": [
+        "entry-point",
+        "reinforcement-learning"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:train.py:make_env",
+      "type": "function",
+      "name": "make_env",
+      "filePath": "train.py",
+      "lineRange": [
+        39,
+        233
+      ],
+      "summary": "Factory function that builds a single DroneObstacleEnv with fully populated config objects, ROSBridge and Spawner connections, and curriculum stage parameters; returns a thunk for use with SB3's SubprocVecEnv.",
+      "tags": [
+        "factory",
+        "service"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:train.py:run_training",
+      "type": "function",
+      "name": "run_training",
+      "filePath": "train.py",
+      "lineRange": [
+        236,
+        503
+      ],
+      "summary": "Configures the SB3 PPO model with DepthStateExtractor policy kwargs, sets up CheckpointCallback and TrainingMonitor, loads or creates a checkpoint, and calls model.learn() for the full training run.",
+      "tags": [
+        "entry-point",
+        "reinforcement-learning"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:train.py:main",
+      "type": "function",
+      "name": "main",
+      "filePath": "train.py",
+      "lineRange": [
+        506,
+        516
+      ],
+      "summary": "CLI entry point that parses arguments and delegates to run_training.",
+      "tags": [
+        "entry-point"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:utils/__init__.py",
+      "type": "file",
+      "name": "__init__.py",
+      "filePath": "utils/__init__.py",
+      "summary": "Package marker for the utils module containing bridge, checkpoint, and transport utilities.",
+      "tags": [
+        "barrel",
+        "package"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:utils/bridge_factory.py",
+      "type": "file",
+      "name": "bridge_factory.py",
+      "filePath": "utils/bridge_factory.py",
+      "summary": "The largest file in the project: implements ROSBridge (rclpy-based PX4 telemetry and Gazebo pose/depth subscriber), Spawner (pillar model spawning via Gazebo), NavState dataclass, and make_bridge/make_spawner factory functions.",
+      "tags": [
+        "service",
+        "middleware",
+        "simulation"
+      ],
+      "complexity": "complex",
+      "languageNotes": "Wraps ROS2/rclpy subscriptions and PX4 uORB topics alongside native Gazebo transport; uses threading for offboard keepalive and pose health checks."
+    },
+    {
+      "id": "class:utils/bridge_factory.py:ROSBridge",
+      "type": "class",
+      "name": "ROSBridge",
+      "filePath": "utils/bridge_factory.py",
+      "lineRange": [
+        74,
+        2145
+      ],
+      "summary": "Central telemetry bridge: subscribes to PX4 local position, velocity, attitude, estimator flags, and depth camera topics via rclpy; publishes velocity setpoints and visual odometry; provides get_gazebo_position, send_velocity, arm/disarm, teleport, and EKF reset helpers.",
+      "tags": [
+        "service",
+        "middleware"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "class:utils/bridge_factory.py:Spawner",
+      "type": "class",
+      "name": "Spawner",
+      "filePath": "utils/bridge_factory.py",
+      "lineRange": [
+        2148,
+        2515
+      ],
+      "summary": "Manages Gazebo pillar model lifecycle: spawns, repositions (individually or in batch), verifies poses, samples random field metadata, and clears pillar models using GzTransportClient.",
+      "tags": [
+        "service",
+        "simulation"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:utils/bridge_factory.py:make_bridge",
+      "type": "function",
+      "name": "make_bridge",
+      "filePath": "utils/bridge_factory.py",
+      "lineRange": [
+        2518,
+        2536
+      ],
+      "summary": "Factory function that constructs and returns a configured ROSBridge instance for a given environment index.",
+      "tags": [
+        "factory",
+        "service"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:utils/bridge_factory.py:make_spawner",
+      "type": "function",
+      "name": "make_spawner",
+      "filePath": "utils/bridge_factory.py",
+      "lineRange": [
+        2539,
+        2544
+      ],
+      "summary": "Factory function that constructs and returns a configured Spawner instance for a given environment index.",
+      "tags": [
+        "factory",
+        "service"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:utils/checkpoint_utils.py",
+      "type": "file",
+      "name": "checkpoint_utils.py",
+      "filePath": "utils/checkpoint_utils.py",
+      "summary": "Provides utilities for locating the latest PPO checkpoint zip file from a log directory and persisting/loading the curriculum stage start-step metadata across training runs.",
+      "tags": [
+        "utility",
+        "reinforcement-learning"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:utils/checkpoint_utils.py:find_latest_checkpoint",
+      "type": "function",
+      "name": "find_latest_checkpoint",
+      "filePath": "utils/checkpoint_utils.py",
+      "lineRange": [
+        15,
+        53
+      ],
+      "summary": "Scans a log directory for SB3 checkpoint zip files, selects the one with the highest step number, and returns its path.",
+      "tags": [
+        "utility"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:utils/checkpoint_utils.py:load_stage_start_step",
+      "type": "function",
+      "name": "load_stage_start_step",
+      "filePath": "utils/checkpoint_utils.py",
+      "lineRange": [
+        69,
+        108
+      ],
+      "summary": "Loads the saved curriculum stage start-step metadata JSON file, returning the step count at which the current stage began.",
+      "tags": [
+        "utility"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:utils/checkpoint_utils.py:save_stage_start_step",
+      "type": "function",
+      "name": "save_stage_start_step",
+      "filePath": "utils/checkpoint_utils.py",
+      "lineRange": [
+        111,
+        152
+      ],
+      "summary": "Persists the current curriculum stage and its start-step to a JSON metadata file alongside the checkpoint.",
+      "tags": [
+        "utility"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:utils/gz_transport_client.py",
+      "type": "file",
+      "name": "gz_transport_client.py",
+      "filePath": "utils/gz_transport_client.py",
+      "summary": "Implements GzTransportClient, a subprocess-based client wrapping the gz service CLI to set model poses, create/remove SDF models, query scene entity names, and subscribe to pose topics in Gazebo simulation.",
+      "tags": [
+        "service",
+        "simulation",
+        "utility"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "class:utils/gz_transport_client.py:GzTransportClient",
+      "type": "class",
+      "name": "GzTransportClient",
+      "filePath": "utils/gz_transport_client.py",
+      "lineRange": [
+        64,
+        300
+      ],
+      "summary": "Wraps Gazebo service calls via gz CLI subprocess: provides set_pose, set_pose_vector, create_sdf, remove_model, scene_entity_names, and subscribe_pose_v methods with a threading lock for serialized access.",
+      "tags": [
+        "service",
+        "simulation"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:utils/gz_transport_client.py:gz_partition_env",
+      "type": "function",
+      "name": "gz_partition_env",
+      "filePath": "utils/gz_transport_client.py",
+      "lineRange": [
+        32,
+        45
+      ],
+      "summary": "Context manager that sets the GZ_PARTITION environment variable to isolate Gazebo topic namespaces per training environment.",
+      "tags": [
+        "utility",
+        "simulation"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:utils/gz_transport_client.py:gz_service_lock",
+      "type": "function",
+      "name": "gz_service_lock",
+      "filePath": "utils/gz_transport_client.py",
+      "lineRange": [
+        49,
+        61
+      ],
+      "summary": "Context manager providing a threading lock around gz service subprocess calls to prevent concurrent invocations.",
+      "tags": [
+        "utility",
+        "middleware"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:utils/logger.py",
+      "type": "file",
+      "name": "logger.py",
+      "filePath": "utils/logger.py",
+      "summary": "Provides a configurable logger factory (setup_logger) that attaches a rich console handler and up to three file handlers (combined, info-only, debug-only), with optional prefix-based message filtering and env-flag debug escalation.",
+      "tags": [
+        "utility",
+        "logging",
+        "configuration"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "class:utils/logger.py:_PrefixAllowFilter",
+      "type": "class",
+      "name": "_PrefixAllowFilter",
+      "filePath": "utils/logger.py",
+      "lineRange": [
+        16,
+        27
+      ],
+      "summary": "A logging.Filter subclass that passes only log records whose message begins with one of a configurable set of allowed string prefixes.",
+      "tags": [
+        "utility",
+        "logging"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:utils/logger.py:setup_logger",
+      "type": "function",
+      "name": "setup_logger",
+      "filePath": "utils/logger.py",
+      "lineRange": [
+        30,
+        103
+      ],
+      "summary": "Creates and fully configures a named Python logger with a RichHandler console output and optional separate file handlers for combined, info, and debug log streams; supports env-flag-driven debug escalation and prefix-allow filtering.",
+      "tags": [
+        "utility",
+        "logging",
+        "factory"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:utils/process_utils.py",
+      "type": "file",
+      "name": "process_utils.py",
+      "filePath": "utils/process_utils.py",
+      "summary": "Provides subprocess helpers for launching and cleanly stopping the supporting bridge processes needed by the PX4/Gazebo simulation environment: MicroXRCE DDS agent, ROS-Gazebo pose bridge, clock bridge, and depth-camera bridge.",
+      "tags": [
+        "utility",
+        "service",
+        "infrastructure"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:utils/process_utils.py:start_microxrce_agent",
+      "type": "function",
+      "name": "start_microxrce_agent",
+      "filePath": "utils/process_utils.py",
+      "lineRange": [
+        15,
+        32
+      ],
+      "summary": "Launches a MicroXRCE-DDS agent process bound to a specific UDP port derived from the instance rank and ROS_DOMAIN_ID, returning the subprocess.Popen handle.",
+      "tags": [
+        "service",
+        "simulation",
+        "infrastructure"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:utils/process_utils.py:stop_bridge_process",
+      "type": "function",
+      "name": "stop_bridge_process",
+      "filePath": "utils/process_utils.py",
+      "lineRange": [
+        35,
+        74
+      ],
+      "summary": "Gracefully terminates a subprocess by sending SIGTERM to its entire process group, then escalates to SIGKILL if the process does not exit within the configurable timeout.",
+      "tags": [
+        "utility",
+        "service"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:utils/process_utils.py:start_gz_pose_bridge",
+      "type": "function",
+      "name": "start_gz_pose_bridge",
+      "filePath": "utils/process_utils.py",
+      "lineRange": [
+        77,
+        115
+      ],
+      "summary": "Starts a ros_gz_bridge process that forwards the Gazebo model pose topic to ROS 2 for a given model and partition, using a configured ROS_DOMAIN_ID.",
+      "tags": [
+        "service",
+        "simulation",
+        "infrastructure"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:utils/process_utils.py:start_gz_clock_bridge",
+      "type": "function",
+      "name": "start_gz_clock_bridge",
+      "filePath": "utils/process_utils.py",
+      "lineRange": [
+        118,
+        142
+      ],
+      "summary": "Starts a ros_gz_bridge subprocess that bridges the Gazebo simulation clock to the /clock ROS 2 topic.",
+      "tags": [
+        "service",
+        "simulation",
+        "infrastructure"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:utils/process_utils.py:start_gz_depth_bridge",
+      "type": "function",
+      "name": "start_gz_depth_bridge",
+      "filePath": "utils/process_utils.py",
+      "lineRange": [
+        145,
+        179
+      ],
+      "summary": "Starts a ros_gz_bridge subprocess that bridges the Gazebo depth-camera image topic to ROS 2 for a given model and partition.",
+      "tags": [
+        "service",
+        "simulation",
+        "infrastructure"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:utils/px4_manager.py",
+      "type": "file",
+      "name": "px4_manager.py",
+      "filePath": "utils/px4_manager.py",
+      "summary": "Defines PX4InstanceManager, which manages the full lifecycle of a single PX4 SITL + Gazebo simulation instance: launching the sim process, killing it, removing the model from the world, teleporting the drone to a spawn pose, and performing a full hard reset with detailed timing profiling.",
+      "tags": [
+        "service",
+        "simulation",
+        "infrastructure"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "class:utils/px4_manager.py:PX4InstanceManager",
+      "type": "class",
+      "name": "PX4InstanceManager",
+      "filePath": "utils/px4_manager.py",
+      "lineRange": [
+        29,
+        592
+      ],
+      "summary": "Manages the lifecycle of one PX4 SITL + Gazebo process: start, kill, model removal, pose setting, and hard reset with per-phase timing; uses GzTransportClient for direct Gazebo transport calls and subprocess for px4-sim launch.",
+      "tags": [
+        "service",
+        "simulation",
+        "infrastructure"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:utils/spawn_world.py",
+      "type": "file",
+      "name": "spawn_world.py",
+      "filePath": "utils/spawn_world.py",
+      "summary": "Provides Gazebo world manipulation utilities for the obstacle-field curriculum: SDF pillar generation, Poisson-disk and corridor-based pillar placement sampling, and batch-efficient spawn/move/clear operations using GzTransportClient or subprocess fallback.",
+      "tags": [
+        "utility",
+        "simulation",
+        "infrastructure"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:utils/spawn_world.py:poisson_disk",
+      "type": "function",
+      "name": "poisson_disk",
+      "filePath": "utils/spawn_world.py",
+      "lineRange": [
+        26,
+        58
+      ],
+      "summary": "Generates N 2-D points within a rectangular region with a minimum inter-point distance (Poisson-disk sampling), respecting optional exclusion zones around specific positions.",
+      "tags": [
+        "utility",
+        "simulation"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:utils/spawn_world.py:spawn_pillar",
+      "type": "function",
+      "name": "spawn_pillar",
+      "filePath": "utils/spawn_world.py",
+      "lineRange": [
+        77,
+        121
+      ],
+      "summary": "Spawns a cylindrical pillar entity in the Gazebo world by constructing an SDF string and issuing it via GzTransportClient or a gz service subprocess fallback with retry logic.",
+      "tags": [
+        "utility",
+        "simulation"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:utils/spawn_world.py:move_entity",
+      "type": "function",
+      "name": "move_entity",
+      "filePath": "utils/spawn_world.py",
+      "lineRange": [
+        124,
+        173
+      ],
+      "summary": "Moves a named Gazebo entity to an (x, y, z) position using GzTransportClient set_pose or a gz service subprocess command as fallback, with configurable timeout.",
+      "tags": [
+        "utility",
+        "simulation"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:utils/spawn_world.py:move_entities_batch",
+      "type": "function",
+      "name": "move_entities_batch",
+      "filePath": "utils/spawn_world.py",
+      "lineRange": [
+        190,
+        272
+      ],
+      "summary": "Efficiently moves multiple Gazebo entities in a single batch call using GzTransportClient set_pose_vector, falling back to a gz service CLI invocation with a serialized pose vector payload.",
+      "tags": [
+        "utility",
+        "simulation"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:utils/spawn_world.py:clear_pillars",
+      "type": "function",
+      "name": "clear_pillars",
+      "filePath": "utils/spawn_world.py",
+      "lineRange": [
+        275,
+        301
+      ],
+      "summary": "Removes up to num_to_check named pillars from the Gazebo world by iterating a name-prefix series and calling GzTransportClient remove_model or subprocess fallback.",
+      "tags": [
+        "utility",
+        "simulation"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:utils/spawn_world.py:sample_corridor_pillars",
+      "type": "function",
+      "name": "sample_corridor_pillars",
+      "filePath": "utils/spawn_world.py",
+      "lineRange": [
+        303,
+        375
+      ],
+      "summary": "Samples pillar (x, y) positions within a rotatable corridor between start and goal, ensuring minimum clearance around both endpoints and minimum inter-pillar separation.",
+      "tags": [
+        "utility",
+        "simulation"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:utils/spawn_world.py:sample_random_field_metadata",
+      "type": "function",
+      "name": "sample_random_field_metadata",
+      "filePath": "utils/spawn_world.py",
+      "lineRange": [
+        378,
+        433
+      ],
+      "summary": "Builds a list of pillar metadata dicts (name, x, y, radius, height) by combining corridor-sampled positions with Poisson-disk sampling and randomised physical dimensions.",
+      "tags": [
+        "utility",
+        "simulation"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:utils/spawn_world.py:spawn_random_field",
+      "type": "function",
+      "name": "spawn_random_field",
+      "filePath": "utils/spawn_world.py",
+      "lineRange": [
+        436,
+        482
+      ],
+      "summary": "Top-level convenience function that samples a complete random pillar field and spawns all pillars into the Gazebo world, returning the pillar metadata list.",
+      "tags": [
+        "utility",
+        "simulation"
+      ],
+      "complexity": "moderate"
+    }
+  ],
+  "edges": [
+    {
+      "source": "file:configs/env_config.py",
+      "target": "class:configs/env_config.py:EnvConfig",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:configs/env_config.py",
+      "target": "class:configs/env_config.py:EnvConfig",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:configs/pillar_config.py",
+      "target": "class:configs/pillar_config.py:PillarConfig",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:configs/pillar_config.py",
+      "target": "class:configs/pillar_config.py:PillarConfig",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:configs/reward_config.py",
+      "target": "class:configs/reward_config.py:RewardConfig",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:configs/reward_config.py",
+      "target": "class:configs/reward_config.py:RewardConfig",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:envs/drone_env.py",
+      "target": "class:envs/drone_env.py:DroneObstacleEnv",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:envs/drone_env.py",
+      "target": "class:envs/drone_env.py:DroneObstacleEnv",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:envs/manager/action_manager.py",
+      "target": "class:envs/manager/action_manager.py:ActionManager",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:envs/manager/action_manager.py",
+      "target": "class:envs/manager/action_manager.py:ActionManager",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:envs/manager/logging_manager.py",
+      "target": "class:envs/manager/logging_manager.py:LoggingManager",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:envs/manager/logging_manager.py",
+      "target": "class:envs/manager/logging_manager.py:LoggingManager",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:envs/manager/pillar_manager.py",
+      "target": "class:envs/manager/pillar_manager.py:PillarManager",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:envs/manager/pillar_manager.py",
+      "target": "class:envs/manager/pillar_manager.py:PillarManager",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:envs/manager/reset_manager.py",
+      "target": "class:envs/manager/reset_manager.py:ResetManager",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:envs/manager/reset_manager.py",
+      "target": "class:envs/manager/reset_manager.py:ResetManager",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:envs/manager/reward_manager.py",
+      "target": "class:envs/manager/reward_manager.py:RewardManager",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:envs/manager/reward_manager.py",
+      "target": "class:envs/manager/reward_manager.py:RewardManager",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:envs/manager/train_manager.py",
+      "target": "class:envs/manager/train_manager.py:TrainManager",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:envs/manager/train_manager.py",
+      "target": "class:envs/manager/train_manager.py:TrainManager",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:envs/monitor.py",
+      "target": "class:envs/monitor.py:TrainingMonitor",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:envs/monitor.py",
+      "target": "class:envs/monitor.py:TrainingMonitor",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:envs/policy.py",
+      "target": "class:envs/policy.py:DepthStateExtractor",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:envs/policy.py",
+      "target": "class:envs/policy.py:DepthStateExtractor",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:train.py",
+      "target": "function:train.py:make_env",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:train.py",
+      "target": "function:train.py:run_training",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:train.py",
+      "target": "function:train.py:main",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:train.py",
+      "target": "function:train.py:make_env",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:train.py",
+      "target": "function:train.py:run_training",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:train.py",
+      "target": "function:train.py:main",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:utils/bridge_factory.py",
+      "target": "class:utils/bridge_factory.py:ROSBridge",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:utils/bridge_factory.py",
+      "target": "class:utils/bridge_factory.py:Spawner",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:utils/bridge_factory.py",
+      "target": "function:utils/bridge_factory.py:make_bridge",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:utils/bridge_factory.py",
+      "target": "function:utils/bridge_factory.py:make_spawner",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:utils/bridge_factory.py",
+      "target": "class:utils/bridge_factory.py:ROSBridge",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:utils/bridge_factory.py",
+      "target": "class:utils/bridge_factory.py:Spawner",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:utils/bridge_factory.py",
+      "target": "function:utils/bridge_factory.py:make_bridge",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:utils/bridge_factory.py",
+      "target": "function:utils/bridge_factory.py:make_spawner",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:utils/bridge_factory.py",
+      "target": "file:utils/logger.py",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "file:utils/checkpoint_utils.py",
+      "target": "function:utils/checkpoint_utils.py:find_latest_checkpoint",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:utils/checkpoint_utils.py",
+      "target": "function:utils/checkpoint_utils.py:load_stage_start_step",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:utils/checkpoint_utils.py",
+      "target": "function:utils/checkpoint_utils.py:save_stage_start_step",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:utils/checkpoint_utils.py",
+      "target": "function:utils/checkpoint_utils.py:find_latest_checkpoint",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:utils/checkpoint_utils.py",
+      "target": "function:utils/checkpoint_utils.py:load_stage_start_step",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:utils/checkpoint_utils.py",
+      "target": "function:utils/checkpoint_utils.py:save_stage_start_step",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:utils/gz_transport_client.py",
+      "target": "class:utils/gz_transport_client.py:GzTransportClient",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:utils/gz_transport_client.py",
+      "target": "function:utils/gz_transport_client.py:gz_partition_env",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:utils/gz_transport_client.py",
+      "target": "function:utils/gz_transport_client.py:gz_service_lock",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:utils/gz_transport_client.py",
+      "target": "class:utils/gz_transport_client.py:GzTransportClient",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:utils/gz_transport_client.py",
+      "target": "function:utils/gz_transport_client.py:gz_partition_env",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:utils/gz_transport_client.py",
+      "target": "function:utils/gz_transport_client.py:gz_service_lock",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "config:configs/ppo_config.yaml",
+      "target": "file:train.py",
+      "type": "configures",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "class:envs/drone_env.py:DroneObstacleEnv",
+      "target": "class:envs/manager/train_manager.py:TrainManager",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "class:envs/manager/train_manager.py:TrainManager",
+      "target": "class:envs/manager/action_manager.py:ActionManager",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "class:envs/manager/train_manager.py:TrainManager",
+      "target": "class:envs/manager/pillar_manager.py:PillarManager",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "class:envs/manager/train_manager.py:TrainManager",
+      "target": "class:envs/manager/reset_manager.py:ResetManager",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "class:envs/manager/train_manager.py:TrainManager",
+      "target": "class:envs/manager/reward_manager.py:RewardManager",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "class:envs/manager/train_manager.py:TrainManager",
+      "target": "class:envs/manager/logging_manager.py:LoggingManager",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "class:envs/manager/pillar_manager.py:PillarManager",
+      "target": "class:utils/bridge_factory.py:Spawner",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "class:utils/bridge_factory.py:Spawner",
+      "target": "class:utils/gz_transport_client.py:GzTransportClient",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "class:envs/manager/reset_manager.py:ResetManager",
+      "target": "class:utils/bridge_factory.py:ROSBridge",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "function:train.py:make_env",
+      "target": "class:envs/drone_env.py:DroneObstacleEnv",
+      "type": "calls",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "function:train.py:make_env",
+      "target": "class:configs/env_config.py:EnvConfig",
+      "type": "calls",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "function:train.py:make_env",
+      "target": "class:configs/pillar_config.py:PillarConfig",
+      "type": "calls",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "function:train.py:make_env",
+      "target": "class:configs/reward_config.py:RewardConfig",
+      "type": "calls",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "function:train.py:run_training",
+      "target": "class:envs/policy.py:DepthStateExtractor",
+      "type": "calls",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "function:train.py:run_training",
+      "target": "class:envs/monitor.py:TrainingMonitor",
+      "type": "calls",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "function:train.py:run_training",
+      "target": "function:utils/checkpoint_utils.py:find_latest_checkpoint",
+      "type": "calls",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "function:train.py:run_training",
+      "target": "function:utils/checkpoint_utils.py:load_stage_start_step",
+      "type": "calls",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "function:train.py:main",
+      "target": "function:train.py:run_training",
+      "type": "calls",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "function:utils/bridge_factory.py:make_bridge",
+      "target": "class:utils/bridge_factory.py:ROSBridge",
+      "type": "calls",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "function:utils/bridge_factory.py:make_spawner",
+      "target": "class:utils/bridge_factory.py:Spawner",
+      "type": "calls",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "class:envs/manager/logging_manager.py:LoggingManager",
+      "target": "file:utils/logger.py",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:utils/logger.py",
+      "target": "class:utils/logger.py:_PrefixAllowFilter",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:utils/logger.py",
+      "target": "function:utils/logger.py:setup_logger",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:utils/logger.py",
+      "target": "class:utils/logger.py:_PrefixAllowFilter",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:utils/logger.py",
+      "target": "function:utils/logger.py:setup_logger",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:utils/process_utils.py",
+      "target": "function:utils/process_utils.py:start_microxrce_agent",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:utils/process_utils.py",
+      "target": "function:utils/process_utils.py:stop_bridge_process",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:utils/process_utils.py",
+      "target": "function:utils/process_utils.py:start_gz_pose_bridge",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:utils/process_utils.py",
+      "target": "function:utils/process_utils.py:start_gz_clock_bridge",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:utils/process_utils.py",
+      "target": "function:utils/process_utils.py:start_gz_depth_bridge",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:utils/process_utils.py",
+      "target": "function:utils/process_utils.py:start_microxrce_agent",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:utils/process_utils.py",
+      "target": "function:utils/process_utils.py:stop_bridge_process",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:utils/process_utils.py",
+      "target": "function:utils/process_utils.py:start_gz_pose_bridge",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:utils/process_utils.py",
+      "target": "function:utils/process_utils.py:start_gz_clock_bridge",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:utils/process_utils.py",
+      "target": "function:utils/process_utils.py:start_gz_depth_bridge",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:utils/px4_manager.py",
+      "target": "class:utils/px4_manager.py:PX4InstanceManager",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:utils/px4_manager.py",
+      "target": "class:utils/px4_manager.py:PX4InstanceManager",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "class:utils/px4_manager.py:PX4InstanceManager",
+      "target": "function:utils/process_utils.py:stop_bridge_process",
+      "type": "calls",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:utils/spawn_world.py",
+      "target": "function:utils/spawn_world.py:poisson_disk",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:utils/spawn_world.py",
+      "target": "function:utils/spawn_world.py:spawn_pillar",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:utils/spawn_world.py",
+      "target": "function:utils/spawn_world.py:move_entity",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:utils/spawn_world.py",
+      "target": "function:utils/spawn_world.py:move_entities_batch",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:utils/spawn_world.py",
+      "target": "function:utils/spawn_world.py:clear_pillars",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:utils/spawn_world.py",
+      "target": "function:utils/spawn_world.py:sample_corridor_pillars",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:utils/spawn_world.py",
+      "target": "function:utils/spawn_world.py:sample_random_field_metadata",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:utils/spawn_world.py",
+      "target": "function:utils/spawn_world.py:spawn_random_field",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:utils/spawn_world.py",
+      "target": "function:utils/spawn_world.py:poisson_disk",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:utils/spawn_world.py",
+      "target": "function:utils/spawn_world.py:spawn_pillar",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:utils/spawn_world.py",
+      "target": "function:utils/spawn_world.py:move_entity",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:utils/spawn_world.py",
+      "target": "function:utils/spawn_world.py:move_entities_batch",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:utils/spawn_world.py",
+      "target": "function:utils/spawn_world.py:clear_pillars",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:utils/spawn_world.py",
+      "target": "function:utils/spawn_world.py:sample_corridor_pillars",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:utils/spawn_world.py",
+      "target": "function:utils/spawn_world.py:sample_random_field_metadata",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:utils/spawn_world.py",
+      "target": "function:utils/spawn_world.py:spawn_random_field",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "function:utils/spawn_world.py:spawn_random_field",
+      "target": "function:utils/spawn_world.py:sample_random_field_metadata",
+      "type": "calls",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "function:utils/spawn_world.py:spawn_random_field",
+      "target": "function:utils/spawn_world.py:spawn_pillar",
+      "type": "calls",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "function:utils/spawn_world.py:sample_random_field_metadata",
+      "target": "function:utils/spawn_world.py:sample_corridor_pillars",
+      "type": "calls",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "function:utils/spawn_world.py:sample_random_field_metadata",
+      "target": "function:utils/spawn_world.py:poisson_disk",
+      "type": "calls",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "function:utils/spawn_world.py:spawn_pillar",
+      "target": "function:utils/spawn_world.py:move_entities_batch",
+      "type": "related",
+      "direction": "forward",
+      "weight": 0.5
+    }
+  ],
+  "layers": [
+    {
+      "id": "layer:training-entry",
+      "name": "Training Entry Point",
+      "description": "Top-level PPO training orchestration: CLI parsing, SubprocVecEnv construction, SB3 PPO model instantiation, checkpoint resume logic, and the make_env factory that wires all configs and bridges into DroneObstacleEnv instances.",
+      "nodeIds": [
+        "file:__init__.py",
+        "file:train.py"
+      ]
+    },
+    {
+      "id": "layer:config",
+      "name": "Configuration",
+      "description": "All training and environment configuration: EnvConfig, PillarConfig, and RewardConfig dataclasses holding every tunable parameter, plus the YAML file specifying PPO hyperparameters and the five-stage curriculum table.",
+      "nodeIds": [
+        "file:configs/__init__.py",
+        "file:configs/env_config.py",
+        "file:configs/pillar_config.py",
+        "config:configs/ppo_config.yaml",
+        "file:configs/reward_config.py"
+      ]
+    },
+    {
+      "id": "layer:gym-interface",
+      "name": "Gym Environment Interface",
+      "description": "The stable-baselines3-facing surface of the RL system: DroneObstacleEnv (the gym.Env subclass), DepthStateExtractor (the multi-modal CNN+MLP feature extractor), and TrainingMonitor (the SB3 callback for TensorBoard and CSV progress logging).",
+      "nodeIds": [
+        "file:envs/__init__.py",
+        "file:envs/drone_env.py",
+        "file:envs/policy.py",
+        "file:envs/monitor.py"
+      ]
+    },
+    {
+      "id": "layer:env-managers",
+      "name": "Environment Step Managers",
+      "description": "The six manager classes that implement the per-step and per-episode RL loop: TrainManager orchestrates ActionManager (velocity smoothing), PillarManager (obstacle tracking and subgoal logic), ResetManager (multi-strategy episode resets), RewardManager (composite reward computation), and LoggingManager (per-step telemetry and CSV episode logs).",
+      "nodeIds": [
+        "file:envs/manager/__init__.py",
+        "file:envs/manager/action_manager.py",
+        "file:envs/manager/logging_manager.py",
+        "file:envs/manager/pillar_manager.py",
+        "file:envs/manager/reset_manager.py",
+        "file:envs/manager/reward_manager.py",
+        "file:envs/manager/train_manager.py"
+      ]
+    },
+    {
+      "id": "layer:simulation-bridge",
+      "name": "Simulation Bridge",
+      "description": "All process-level integration with PX4 SITL, ROS 2, and Gazebo: ROSBridge (rclpy telemetry subscriber and velocity publisher), Spawner (pillar model lifecycle), GzTransportClient (native Gazebo transport via gz CLI), PX4InstanceManager (SITL process lifecycle with hard-reset timing), process_utils (subprocess launchers for MicroXRCE-DDS and ros_gz_bridge), and spawn_world (SDF generation and Poisson-disk pillar placement).",
+      "nodeIds": [
+        "file:utils/__init__.py",
+        "file:utils/bridge_factory.py",
+        "file:utils/gz_transport_client.py",
+        "file:utils/process_utils.py",
+        "file:utils/px4_manager.py",
+        "file:utils/spawn_world.py"
+      ]
+    },
+    {
+      "id": "layer:utility",
+      "name": "Shared Utilities",
+      "description": "Cross-cutting infrastructure shared across all layers: setup_logger (rich console + rotating file log handlers with prefix filtering) and checkpoint_utils (scanning checkpoint directories, persisting and loading curriculum stage start-step metadata).",
+      "nodeIds": [
+        "file:utils/logger.py",
+        "file:utils/checkpoint_utils.py"
+      ]
+    },
+    {
+      "id": "layer:safety",
+      "name": "Safety Layer",
+      "description": "Experimental formal-verification stub using Z3 to filter unsafe drone velocity actions at runtime; currently a placeholder reserved for future constraint-based shielding integration.",
+      "nodeIds": [
+        "file:safety/__init__.py",
+        "file:safety/z3_shield.py"
+      ]
+    },
+    {
+      "id": "layer:tooling",
+      "name": "Project Tooling",
+      "description": "Analysis and developer tooling configuration: the .understandignore pattern file that excludes generated and transient paths from the understand-anything knowledge graph scanner.",
+      "nodeIds": [
+        "file:.understand-anything/.understandignore"
+      ]
+    }
+  ],
+  "tour": [
+    {
+      "order": 1,
+      "title": "Training Entry Point",
+      "description": "train.py is where everything begins. It parses the CLI stage argument, loads ppo_config.yaml, calls make_env() to wire all configs and bridges into DroneObstacleEnv instances, then hands a SubprocVecEnv to Stable-Baselines3's PPO.learn(). Reading this file tells you the entire lifecycle of a training run in roughly 500 lines: argument parsing, checkpoint resume priority, curriculum stage advance, and the final model.learn() call that drives all subsequent steps.",
+      "nodeIds": [
+        "file:train.py"
+      ],
+      "languageLesson": "The make_env factory returns a zero-argument thunk (a lambda with no parameters) rather than an env directly. SB3's SubprocVecEnv calls each thunk in a fresh subprocess, so every environment instance gets its own Python interpreter and OS process \u2014 critical for parallel Gazebo simulations that otherwise share global state."
+    },
+    {
+      "order": 2,
+      "title": "PPO Hyperparameters and Curriculum",
+      "description": "ppo_config.yaml is the single file that defines the five-stage curriculum: stage 1 runs with zero pillars for 500k steps, each subsequent stage doubles the obstacle density, and stage 5 is open-ended. It also holds every PPO knob \u2014 learning rate, gamma, GAE lambda, clip range, and n_envs. Understanding this file tells you why the agent trains the way it does before you ever look at reward math.",
+      "nodeIds": [
+        "config:configs/ppo_config.yaml"
+      ],
+      "languageLesson": "YAML anchors (&) and aliases (*) let curriculum stage blocks share common PPO hyperparameters without repeating them. Changing a shared anchor updates every stage that references it, which is why the config stays concise despite defining five distinct training phases."
+    },
+    {
+      "order": 3,
+      "title": "Environment Configuration Dataclasses",
+      "description": "EnvConfig, PillarConfig, and RewardConfig are the three pure-data containers that encode every tunable value the environment uses. EnvConfig owns observation shapes, velocity limits, fence bounds, and the goal-distance ramp schedule. PillarConfig defines obstacle geometry and collision thresholds. RewardConfig holds over 100 reward shaping coefficients differentiated by curriculum stage. All three are instantiated in make_env() and passed down to every manager, making them the single source of truth for environment behaviour.",
+      "nodeIds": [
+        "file:configs/env_config.py",
+        "file:configs/pillar_config.py",
+        "file:configs/reward_config.py"
+      ],
+      "languageLesson": "Python dataclasses with default field values act as self-documenting configuration schemas. Because defaults are expressed directly in the class body, a reader can see the operational baseline without consulting any external documentation, and overrides at instantiation time appear explicitly in make_env()."
+    },
+    {
+      "order": 4,
+      "title": "The Gym Interface: DroneObstacleEnv",
+      "description": "DroneObstacleEnv is the boundary between Stable-Baselines3 and this project's custom logic. It is intentionally thin: it defines a Dict observation space with a (3, 84, 84) depth key and a (20,) state key, then delegates every reset(), step(), and close() call to TrainManager. This separation matters because SB3 only knows about gym.Env \u2014 all the PX4 and Gazebo complexity is hidden behind this interface, so the RL algorithm can be swapped without touching the simulation stack.",
+      "nodeIds": [
+        "file:envs/drone_env.py"
+      ],
+      "languageLesson": "Gym's Dict observation space lets a policy receive heterogeneous sensor modalities as a single structured observation. SB3 routes each key to a dedicated sub-network inside the feature extractor, which is why DepthStateExtractor can handle depth frames and numeric state independently before fusing them."
+    },
+    {
+      "order": 5,
+      "title": "The Policy Network: DepthStateExtractor",
+      "description": "DepthStateExtractor is the neural architecture that turns raw sensor readings into features the PPO actor and critic heads can use. The CNN branch processes three stacked 84x84 depth frames through three convolutional layers (32\u219264\u219264 channels) to build a spatial obstacle representation. A parallel MLP branch encodes the 20-dimensional state vector (relative goal, velocity, sector depth features, yaw error) into a 64-dim embedding. The two branches are concatenated and fed to a 256-dim fusion layer before the shared PPO heads. The depth stack matters because a single frame cannot distinguish a drone moving toward a wall from a stationary drone near a wall.",
+      "nodeIds": [
+        "file:envs/policy.py"
+      ],
+      "languageLesson": "SB3's BaseFeaturesExtractor protocol requires the subclass to accept an observation_space argument and implement a forward() that returns a flat feature tensor. PPO.learn() automatically passes policy_kwargs={'features_extractor_class': DepthStateExtractor} to wire this custom extractor into the actor-critic graph without modifying any SB3 internals."
+    },
+    {
+      "order": 6,
+      "title": "The Step Orchestrator: TrainManager",
+      "description": "TrainManager is the engine room of each environment subprocess. Its step_process() method is called once per gym step: it routes the four-dimensional velocity action through ActionManager, publishes the command to PX4 via ROSBridge, spins the ROS event loop for one time-step, reads back position and depth, asks PillarManager and RewardManager to compute collision state and reward, checks termination conditions, and returns the next observation. Every other manager exists to keep step_process() readable by offloading one domain of concern.",
+      "nodeIds": [
+        "file:envs/manager/train_manager.py"
+      ],
+      "languageLesson": "The 'manager' pattern used here is a form of the Strategy pattern: TrainManager holds references to five collaborator objects and dispatches domain-specific work to them. This keeps the step loop linear and testable \u2014 each manager can be unit-tested in isolation by mocking the others."
+    },
+    {
+      "order": 7,
+      "title": "Action, Reward, and Pillar Managers",
+      "description": "Three managers implement the core RL mechanics that run inside every step. ActionManager applies exponential moving average smoothing (alpha=0.35) to the raw policy output before it reaches PX4 \u2014 without smoothing, high-frequency oscillations damage training stability. RewardManager sums over 15 named reward components including goal progress, heading alignment, altitude banding, obstacle clearance, and subgoal bonuses; the exact coefficients differ between stage 1 (no pillars) and stage 2+ (with pillars) to avoid conflicting gradients. PillarManager tracks each pillar's pass/bypass/ring state, detects both geometric and depth-camera-based collisions, and emits attention bonuses when the drone maintains safe heading to the nearest obstacle.",
+      "nodeIds": [
+        "file:envs/manager/action_manager.py",
+        "file:envs/manager/reward_manager.py",
+        "file:envs/manager/pillar_manager.py"
+      ]
+    },
+    {
+      "order": 8,
+      "title": "Episode Resets: ResetManager",
+      "description": "ResetManager solves one of the hardest problems in drone RL simulation: how to restart an episode quickly without the instability of a full disarm-rearm cycle. It classifies the terminal reason (collision, timeout, out-of-fence) and selects among four strategies: continuous reset (drone stays airborne, teleported to new start XY), rescue-then-continuous (fly back inside fence first), multi-env fast (shortened EKF settle), and hard reset (full disarm/rearm/takeoff, used as a fallback when the drone is irrecoverably stuck). The continuous strategy keeps training throughput high; the hard reset exists because the flight controller's EKF can drift into an unrecoverable state.",
+      "nodeIds": [
+        "file:envs/manager/reset_manager.py"
+      ],
+      "languageLesson": "Each reset strategy requires EKF convergence before the episode can begin \u2014 a pattern called 'waiting for external state'. ResetManager polls estimator flag topics via ROSBridge rather than sleeping for a fixed duration, because the convergence time varies with the quality of the visual odometry signal published by the bridge."
+    },
+    {
+      "order": 9,
+      "title": "Training Observability: TrainingMonitor and LoggingManager",
+      "description": "Two components close the observability loop. TrainingMonitor is an SB3 BaseCallback that fires at each rollout boundary, pushing reward statistics, episode lengths, and curriculum stage metadata to TensorBoard and a progress CSV. LoggingManager runs inside each environment subprocess and records per-step telemetry, per-episode summaries with a full reward component breakdown, and k-step aggregate metrics to rotating per-environment log files. Together they let you diagnose reward collapse, curriculum transition timing, and action smoothness without interrupting training.",
+      "nodeIds": [
+        "file:envs/monitor.py",
+        "file:envs/manager/logging_manager.py"
+      ]
+    },
+    {
+      "order": 10,
+      "title": "The Simulation Bridge: ROSBridge and Spawner",
+      "description": "bridge_factory.py is the largest file in the project because it must translate between three incompatible worlds: PX4's NED coordinate frame, Gazebo's ENU frame, and the RL environment's ENU-centric math. ROSBridge subscribes to PX4 uORB topics (local position, velocity, attitude, estimator flags, depth camera) over ROS 2 DDS, and publishes velocity setpoints and visual odometry back to PX4. All velocity inputs to send_velocity() are ENU; the bridge converts internally to NED before publishing. Spawner sits alongside ROSBridge in this file and manages the Gazebo pillar model lifecycle \u2014 spawning, repositioning, and clearing cylindrical obstacles on behalf of PillarManager.",
+      "nodeIds": [
+        "file:utils/bridge_factory.py"
+      ],
+      "languageLesson": "ROSBridge uses a background keepalive thread to hold PX4 in offboard mode: if the setpoint stream pauses for more than 500ms, PX4 will autonomously switch back to position hold. This is a property of the PX4 offboard mode protocol rather than a bug \u2014 the thread exists precisely to satisfy this liveness requirement."
+    },
+    {
+      "order": 11,
+      "title": "Gazebo World Manipulation",
+      "description": "spawn_world.py and gz_transport_client.py form the layer that physically builds and mutates the Gazebo simulation world. GzTransportClient wraps the gz CLI as a subprocess with a threading lock to prevent concurrent invocations from parallel environments. spawn_world.py builds on it with higher-level operations: Poisson-disk sampling ensures pillars are never placed too close together, corridor-based sampling places the hardest obstacles on the direct path to the goal, and move_entities_batch repositions all pillars in a single batched gz service call to minimise reset latency. These spatial algorithms directly control the difficulty gradient the drone encounters as the curriculum advances.",
+      "nodeIds": [
+        "file:utils/spawn_world.py",
+        "file:utils/gz_transport_client.py"
+      ],
+      "languageLesson": "Poisson-disk sampling generates points with a guaranteed minimum separation distance, unlike uniform random sampling which can produce arbitrarily close clusters. This matters for training because pillars that are too close together create impassable corridors, while pillars that are too spread out give the drone no useful obstacle-avoidance signal."
+    },
+    {
+      "order": 12,
+      "title": "Process Lifecycle: PX4InstanceManager and process_utils",
+      "description": "For each parallel training environment, a separate PX4 SITL process and Gazebo world must run in isolation. PX4InstanceManager owns the full lifecycle of one such instance \u2014 launching the px4-sim binary, waiting for it to stabilise, teleporting the drone model, and performing a timed hard reset with per-phase profiling when the flight controller enters an unrecoverable state. process_utils.py provides the subprocess launchers that must start before PX4 can receive commands: the MicroXRCE-DDS agent bridges PX4 uORB to ROS 2 DDS, and three ros_gz_bridge processes forward pose, clock, and depth-camera topics between Gazebo and ROS 2.",
+      "nodeIds": [
+        "file:utils/px4_manager.py",
+        "file:utils/process_utils.py"
+      ],
+      "languageLesson": "Each environment rank receives its own ROS_DOMAIN_ID (30+rank), GZ_PARTITION (drone_rl_{rank}), and UXRCE_DDS_PORT (8888+rank). This namespace isolation prevents topic cross-talk between parallel simulations \u2014 without it, velocity commands from environment 0 would be received by the drone in environment 1."
+    },
+    {
+      "order": 13,
+      "title": "Checkpoint and Resume Utilities",
+      "description": "checkpoint_utils.py enables the curriculum's most important property: training can be interrupted and resumed at any point without losing progress. find_latest_checkpoint scans the stage-specific checkpoint directory and selects the zip with the highest step number. save_stage_start_step and load_stage_start_step persist a small JSON file alongside each checkpoint that records which curriculum stage was active when the checkpoint was written \u2014 this is what allows run_training() to compute stage-relative step counts correctly after a resume, and to trigger stage advancement when the minimum step budget for a stage has been met.",
+      "nodeIds": [
+        "file:utils/checkpoint_utils.py"
+      ]
+    }
+  ]
+}

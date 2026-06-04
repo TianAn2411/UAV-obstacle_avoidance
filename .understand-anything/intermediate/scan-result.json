@@ -1,0 +1,230 @@
+{
+  "name": "obstacle_avoidance",
+  "description": "Reinforcement learning training system for drone obstacle avoidance using PPO with PX4 SITL simulation, featuring a curriculum of staged training environments with increasing pillar counts and a CNN+MLP policy operating on depth-camera observations and state vectors.",
+  "languages": [
+    "python",
+    "unknown",
+    "yaml"
+  ],
+  "frameworks": [
+    "gymnasium",
+    "PyTorch",
+    "stable-baselines3",
+    "ROS 2",
+    "Gazebo",
+    "PX4 SITL",
+    "OpenCV"
+  ],
+  "files": [
+    {
+      "path": "__init__.py",
+      "language": "python",
+      "sizeLines": 0,
+      "fileCategory": "code"
+    },
+    {
+      "path": ".understand-anything/.understandignore",
+      "language": "unknown",
+      "sizeLines": 19,
+      "fileCategory": "code"
+    },
+    {
+      "path": "configs/__init__.py",
+      "language": "python",
+      "sizeLines": 0,
+      "fileCategory": "code"
+    },
+    {
+      "path": "configs/env_config.py",
+      "language": "python",
+      "sizeLines": 132,
+      "fileCategory": "code"
+    },
+    {
+      "path": "configs/pillar_config.py",
+      "language": "python",
+      "sizeLines": 65,
+      "fileCategory": "code"
+    },
+    {
+      "path": "configs/ppo_config.yaml",
+      "language": "yaml",
+      "sizeLines": 28,
+      "fileCategory": "config"
+    },
+    {
+      "path": "configs/reward_config.py",
+      "language": "python",
+      "sizeLines": 197,
+      "fileCategory": "code"
+    },
+    {
+      "path": "envs/__init__.py",
+      "language": "python",
+      "sizeLines": 0,
+      "fileCategory": "code"
+    },
+    {
+      "path": "envs/drone_env.py",
+      "language": "python",
+      "sizeLines": 46,
+      "fileCategory": "code"
+    },
+    {
+      "path": "envs/manager/__init__.py",
+      "language": "python",
+      "sizeLines": 0,
+      "fileCategory": "code"
+    },
+    {
+      "path": "envs/manager/action_manager.py",
+      "language": "python",
+      "sizeLines": 88,
+      "fileCategory": "code"
+    },
+    {
+      "path": "envs/manager/logging_manager.py",
+      "language": "python",
+      "sizeLines": 591,
+      "fileCategory": "code"
+    },
+    {
+      "path": "envs/manager/pillar_manager.py",
+      "language": "python",
+      "sizeLines": 1105,
+      "fileCategory": "code"
+    },
+    {
+      "path": "envs/manager/reset_manager.py",
+      "language": "python",
+      "sizeLines": 1039,
+      "fileCategory": "code"
+    },
+    {
+      "path": "envs/manager/reward_manager.py",
+      "language": "python",
+      "sizeLines": 587,
+      "fileCategory": "code"
+    },
+    {
+      "path": "envs/manager/train_manager.py",
+      "language": "python",
+      "sizeLines": 686,
+      "fileCategory": "code"
+    },
+    {
+      "path": "envs/monitor.py",
+      "language": "python",
+      "sizeLines": 295,
+      "fileCategory": "code"
+    },
+    {
+      "path": "envs/policy.py",
+      "language": "python",
+      "sizeLines": 45,
+      "fileCategory": "code"
+    },
+    {
+      "path": "safety/__init__.py",
+      "language": "python",
+      "sizeLines": 0,
+      "fileCategory": "code"
+    },
+    {
+      "path": "safety/z3_shield.py",
+      "language": "python",
+      "sizeLines": 0,
+      "fileCategory": "code"
+    },
+    {
+      "path": "train.py",
+      "language": "python",
+      "sizeLines": 516,
+      "fileCategory": "code"
+    },
+    {
+      "path": "utils/__init__.py",
+      "language": "python",
+      "sizeLines": 0,
+      "fileCategory": "code"
+    },
+    {
+      "path": "utils/bridge_factory.py",
+      "language": "python",
+      "sizeLines": 2544,
+      "fileCategory": "code"
+    },
+    {
+      "path": "utils/checkpoint_utils.py",
+      "language": "python",
+      "sizeLines": 152,
+      "fileCategory": "code"
+    },
+    {
+      "path": "utils/gz_transport_client.py",
+      "language": "python",
+      "sizeLines": 300,
+      "fileCategory": "code"
+    },
+    {
+      "path": "utils/logger.py",
+      "language": "python",
+      "sizeLines": 103,
+      "fileCategory": "code"
+    },
+    {
+      "path": "utils/process_utils.py",
+      "language": "python",
+      "sizeLines": 179,
+      "fileCategory": "code"
+    },
+    {
+      "path": "utils/px4_manager.py",
+      "language": "python",
+      "sizeLines": 592,
+      "fileCategory": "code"
+    },
+    {
+      "path": "utils/spawn_world.py",
+      "language": "python",
+      "sizeLines": 486,
+      "fileCategory": "code"
+    }
+  ],
+  "totalFiles": 29,
+  "filteredByIgnore": 0,
+  "estimatedComplexity": "small",
+  "importMap": {
+    "__init__.py": [],
+    ".understand-anything/.understandignore": [],
+    "configs/__init__.py": [],
+    "configs/env_config.py": [],
+    "configs/pillar_config.py": [],
+    "configs/ppo_config.yaml": [],
+    "configs/reward_config.py": [],
+    "envs/__init__.py": [],
+    "envs/drone_env.py": [],
+    "envs/manager/__init__.py": [],
+    "envs/manager/action_manager.py": [],
+    "envs/manager/logging_manager.py": [],
+    "envs/manager/pillar_manager.py": [],
+    "envs/manager/reset_manager.py": [],
+    "envs/manager/reward_manager.py": [],
+    "envs/manager/train_manager.py": [],
+    "envs/monitor.py": [],
+    "envs/policy.py": [],
+    "safety/__init__.py": [],
+    "safety/z3_shield.py": [],
+    "train.py": [],
+    "utils/__init__.py": [],
+    "utils/bridge_factory.py": [
+      "utils/logger.py"
+    ],
+    "utils/checkpoint_utils.py": [],
+    "utils/gz_transport_client.py": [],
+    "utils/logger.py": [],
+    "utils/process_utils.py": [],
+    "utils/px4_manager.py": [],
+    "utils/spawn_world.py": []
+  }
+}

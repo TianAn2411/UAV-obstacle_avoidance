@@ -1,3 +1,4 @@
+import dataclasses
 import logging
 import multiprocessing as mp
 import os
@@ -28,12 +29,13 @@ from obstacle_avoidance.utils.checkpoint_utils import (
 from obstacle_avoidance.utils.process_utils import (
     start_gz_clock_bridge,
     start_gz_depth_bridge,
+    start_gz_lidar_bridge,
     start_gz_pose_bridge,
     start_microxrce_agent,
 )
 from obstacle_avoidance.utils.px4_manager import PX4InstanceManager
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("obstacle_avoidance")
 
 
 def make_env(
@@ -184,6 +186,17 @@ def make_env(
             )
         )
 
+        bridge_processes.append(
+            (
+                "lidar",
+                start_gz_lidar_bridge(
+                    model_name=model_name,
+                    gz_partition=partition,
+                    ros_domain_id=ros_domain,
+                ),
+            )
+        )
+
         # 6. Create PX4InstanceManager, call .start() — old L1132-1146
         px4_manager = PX4InstanceManager(
             rank=rank,
@@ -220,6 +233,10 @@ def make_env(
 
         # 8. Construct DroneObstacleEnv — old L1176-1197
         ecfg = EnvConfig()
+        _ecfg_fields = {f.name for f in dataclasses.fields(EnvConfig)}
+        for key, val in conf.items():
+            if key in _ecfg_fields:
+                setattr(ecfg, key, val)
         rcfg = RewardConfig()
         pcfg = PillarConfig(num_pillars=num_pillars)
 
@@ -368,8 +385,14 @@ def run_training(stage: int = 1) -> None:
     )
 
     # --- Load or create model (matches resume priority chain order) ---
+    def _log_model_load(source: str, label: str) -> None:
+        logger.info("=" * 60)
+        logger.info(f"[MODEL LOAD] {label}")
+        logger.info(f"   {source}")
+        logger.info("=" * 60)
+
     if os.path.exists(interrupted_model_path):
-        logger.info(f"[MODEL LOAD] Resume from interrupted model: {interrupted_model_path}")
+        _log_model_load(interrupted_model_path, f"Resume stage {stage} from INTERRUPTED model")
         model = PPO.load(
             interrupted_model_path,
             env=env,
@@ -377,13 +400,10 @@ def run_training(stage: int = 1) -> None:
             batch_size=ppo_cfg["batch_size"],
             device="cuda",
         )
-        logger.info(
-            f"[MODEL LOAD DEBUG] source={interrupted_model_path} "
-            f"loaded_num_timesteps={int(getattr(model, 'num_timesteps', -1))}"
-        )
+        logger.info(f"[MODEL LOAD] loaded_num_timesteps={int(getattr(model, 'num_timesteps', -1))}")
 
     elif latest_ckpt is not None:
-        logger.info(f"[MODEL LOAD] Resume from latest checkpoint: {latest_ckpt}")
+        _log_model_load(latest_ckpt, f"Resume stage {stage} from latest checkpoint")
         model = PPO.load(
             latest_ckpt,
             env=env,
@@ -391,13 +411,10 @@ def run_training(stage: int = 1) -> None:
             batch_size=ppo_cfg["batch_size"],
             device="cuda",
         )
-        logger.info(
-            f"[MODEL LOAD DEBUG] source={latest_ckpt} "
-            f"loaded_num_timesteps={int(getattr(model, 'num_timesteps', -1))}"
-        )
+        logger.info(f"[MODEL LOAD] loaded_num_timesteps={int(getattr(model, 'num_timesteps', -1))}")
 
     elif os.path.exists(final_model_path):
-        logger.info(f"[MODEL LOAD] Resume from final model: {final_model_path}")
+        _log_model_load(final_model_path, f"Resume stage {stage} from final model")
         model = PPO.load(
             final_model_path,
             env=env,
@@ -405,15 +422,10 @@ def run_training(stage: int = 1) -> None:
             batch_size=ppo_cfg["batch_size"],
             device="cuda",
         )
-        logger.info(
-            f"[MODEL LOAD DEBUG] source={final_model_path} "
-            f"loaded_num_timesteps={int(getattr(model, 'num_timesteps', -1))}"
-        )
+        logger.info(f"[MODEL LOAD] loaded_num_timesteps={int(getattr(model, 'num_timesteps', -1))}")
 
     elif stage > 1 and os.path.exists(prev_final_model_path):
-        logger.info(
-            f"[MODEL LOAD] Stage-transfer from stage {stage - 1}: {prev_final_model_path}"
-        )
+        _log_model_load(prev_final_model_path, f"Stage-transfer: stage {stage - 1} -> {stage} (lr=1e-4)")
         model = PPO.load(
             prev_final_model_path,
             env=env,
@@ -422,13 +434,12 @@ def run_training(stage: int = 1) -> None:
             batch_size=ppo_cfg["batch_size"],
             device="cuda",
         )
-        logger.info(
-            f"[MODEL LOAD DEBUG] source={prev_final_model_path} "
-            f"loaded_num_timesteps={int(getattr(model, 'num_timesteps', -1))}"
-        )
+        logger.info(f"[MODEL LOAD] loaded_num_timesteps={int(getattr(model, 'num_timesteps', -1))}")
 
     else:
-        logger.info("[MODEL LOAD] Creating fresh PPO model.")
+        logger.info("=" * 60)
+        logger.info(f"[MODEL LOAD] Fresh PPO model — stage {stage}")
+        logger.info("=" * 60)
         model = PPO(
             "MultiInputPolicy",
             env,

@@ -177,3 +177,39 @@ def start_gz_depth_bridge(
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
+
+
+def start_gz_lidar_bridge(
+    model_name: str,
+    gz_partition: str,
+    ros_domain_id: int,
+) -> subprocess.Popen:
+    """
+    Bridge Gazebo 2D LiDAR scan to ROS 2 LaserScan topic.
+
+    Gazebo publish:  /lidar_2d_v2/scan  (gz.msgs.LaserScan)
+    ROS 2 receive:   /lidar/scan        (sensor_msgs/msg/LaserScan)
+
+    Requires <topic>/lidar_2d_v2/scan</topic> set explicitly in lidar_2d_v2/model.sdf.
+    Without the bridge, bridge_factory.lidar_raw stays at max range default.
+    """
+    bridge_env = os.environ.copy()
+    bridge_env["ROS_DOMAIN_ID"] = str(ros_domain_id)
+    bridge_env["GZ_PARTITION"] = str(gz_partition)
+
+    spec = "/lidar_2d_v2/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan"
+
+    logger.info(
+        f"Starting ros_gz lidar bridge "
+        f"ROS_DOMAIN_ID={ros_domain_id}, GZ_PARTITION={gz_partition}, "
+        f"Gazebo: /lidar_2d_v2/scan -> ROS 2: /lidar/scan"
+    )
+
+    return subprocess.Popen(
+        ["ros2", "run", "ros_gz_bridge", "parameter_bridge", spec,
+         "--ros-args", "-r", "/lidar_2d_v2/scan:=/lidar/scan"],
+        env=bridge_env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )

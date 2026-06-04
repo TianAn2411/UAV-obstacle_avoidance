@@ -1,0 +1,2404 @@
+{
+  "version": "1.0.0",
+  "gitCommitHash": "85df8c2281c2466b30a121b22b0bf33dc69bcfe4",
+  "generatedAt": "2026-06-03T07:14:13.022Z",
+  "files": {
+    "__init__.py": {
+      "filePath": "__init__.py",
+      "contentHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 1,
+      "hasStructuralAnalysis": true
+    },
+    ".understand-anything/.understandignore": {
+      "filePath": ".understand-anything/.understandignore",
+      "contentHash": "aa6bb001b80d59e86fe0bf5639d2aab40b58894aa39fc8291f783b158cc186ce",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 20,
+      "hasStructuralAnalysis": false
+    },
+    "configs/__init__.py": {
+      "filePath": "configs/__init__.py",
+      "contentHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 1,
+      "hasStructuralAnalysis": true
+    },
+    "configs/env_config.py": {
+      "filePath": "configs/env_config.py",
+      "contentHash": "d21cee536de7b3424ce9c237aa12bcf5768c4711bed5e744d632c132d9f06424",
+      "functions": [],
+      "classes": [
+        {
+          "name": "EnvConfig",
+          "methods": [],
+          "properties": [
+            "depth_shape",
+            "depth_min",
+            "depth_max",
+            "state_dim",
+            "action_dim",
+            "start",
+            "goal",
+            "goal_z_min",
+            "goal_z_max",
+            "goal_xy_radius_schedule_values",
+            "goal_xy_radius_schedule_steps",
+            "goal_dist_low_start",
+            "goal_dist_low_end",
+            "goal_dist_high_start",
+            "goal_dist_high_end",
+            "goal_dist_ramp_steps",
+            "goal_dist_ramp_min_band",
+            "fence_x_min",
+            "fence_x_max",
+            "fence_y_min",
+            "fence_y_max",
+            "fence_z_min",
+            "fence_z_max",
+            "vx_limit",
+            "vy_limit",
+            "vz_up_limit",
+            "vz_down_limit",
+            "yaw_rate_limit",
+            "action_smoothing",
+            "alt_min",
+            "alt_max",
+            "max_steps",
+            "dt",
+            "takeoff_assist_steps",
+            "takeoff_assist_alt",
+            "takeoff_assist_vz",
+            "airborne_z",
+            "max_px4_lpos_z_abs",
+            "max_px4_vel_z_abs",
+            "max_px4_speed",
+            "teleport_settle_timeout",
+            "teleport_settle_max_speed",
+            "teleport_settle_max_vz",
+            "depth_sector_feature_dim",
+            "depth_stack_size",
+            "center_crop_h_lo",
+            "center_crop_h_hi",
+            "center_crop_w_lo",
+            "center_crop_w_hi",
+            "lift_warmup_time",
+            "lift_vz",
+            "rescue_margin_m",
+            "pre_episode_auto_yaw_enabled",
+            "pre_episode_auto_yaw_timeout_s",
+            "pre_episode_auto_yaw_tol_deg",
+            "pre_episode_auto_yaw_gain",
+            "multi_env_fast_reset_enabled",
+            "total_envs",
+            "multi_env_fast_reset_idle_before_teleport_s",
+            "multi_env_fast_reset_fresh_timeout_s",
+            "multi_env_fast_reset_settle_timeout_s",
+            "multi_env_fast_reset_ekf_timeout_s",
+            "continuous_reset_fence_margin_thresh",
+            "start_clearance_xy",
+            "reset_descend_alt",
+            "reset_descend_timeout",
+            "reset_descend_vz",
+            "collision_continuous_reset_anti_sink_enabled",
+            "collision_continuous_reset_anti_sink_duration_s",
+            "collision_continuous_reset_anti_sink_gain",
+            "collision_continuous_reset_anti_sink_max_vz",
+            "hard_reset_every_episodes",
+            "use_rescue_after_out_of_fence",
+            "rescue_timeout_base_s",
+            "rescue_timeout_min_s",
+            "rescue_timeout_max_s",
+            "rescue_timeout_buffer_s",
+            "rescue_expected_speed_factor",
+            "rescue_xy_speed_max",
+            "rescue_target_alt_m",
+            "rescue_xy_kp",
+            "multi_env_fast_reset_reasons"
+          ],
+          "exported": true,
+          "lineCount": 128
+        }
+      ],
+      "imports": [
+        {
+          "source": "dataclasses",
+          "specifiers": [
+            "dataclass",
+            "field"
+          ]
+        }
+      ],
+      "exports": [
+        "EnvConfig"
+      ],
+      "totalLines": 133,
+      "hasStructuralAnalysis": true
+    },
+    "configs/pillar_config.py": {
+      "filePath": "configs/pillar_config.py",
+      "contentHash": "5fe7f19e13dd0849c992b1eb9248b93cdb22935e4530cb6363c2693592664a1a",
+      "functions": [],
+      "classes": [
+        {
+          "name": "PillarConfig",
+          "methods": [],
+          "properties": [
+            "num_pillars",
+            "radius_range",
+            "height_range",
+            "min_dist",
+            "spawn_bounds",
+            "corridor_half_width",
+            "start_clearance",
+            "goal_clearance",
+            "t_min",
+            "t_max",
+            "drone_trigger_radius",
+            "drone_trigger_half_height",
+            "pillar_collision_margin",
+            "pillar_hard_overlap_margin",
+            "pillar_heading_horizon_s",
+            "pillar_heading_min_speed",
+            "hard_collision_front_depth",
+            "hard_collision_forward_speed",
+            "hard_collision_pillar_dist",
+            "hard_collision_pillar_fwd_align",
+            "hard_collision_closing_speed",
+            "pillar_pool_radius",
+            "pillar_pool_height",
+            "pillar_pool_parking_x",
+            "pillar_pool_parking_y",
+            "pillar_pool_parking_z",
+            "corridor_jitter_deg",
+            "near_miss_margin",
+            "bypass_enter_radius",
+            "post_pillar_pass_margin",
+            "bypass_max_active",
+            "gap_detection_enabled",
+            "required_gap_width",
+            "ring_points_per_pillar",
+            "ring_min_fence_margin",
+            "ring_max_claim_per_pillar"
+          ],
+          "exported": true,
+          "lineCount": 61
+        }
+      ],
+      "imports": [
+        {
+          "source": "dataclasses",
+          "specifiers": [
+            "dataclass"
+          ]
+        }
+      ],
+      "exports": [
+        "PillarConfig"
+      ],
+      "totalLines": 66,
+      "hasStructuralAnalysis": true
+    },
+    "configs/ppo_config.yaml": {
+      "filePath": "configs/ppo_config.yaml",
+      "contentHash": "1021b760fcd4148ec8c5e2872f1dccf358ee4e9281589ca2c06c189f39f9df05",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 29,
+      "hasStructuralAnalysis": true
+    },
+    "configs/reward_config.py": {
+      "filePath": "configs/reward_config.py",
+      "contentHash": "05dfb71af33f5fbcba22649b0a69fba292056ef85ef94c92cb374727726b9a87",
+      "functions": [],
+      "classes": [
+        {
+          "name": "RewardConfig",
+          "methods": [],
+          "properties": [
+            "goal_xy_terminal_reward",
+            "max_steps_penalty_pillars_near_goal",
+            "max_steps_penalty_pillars_far_goal",
+            "max_steps_penalty_no_pillars",
+            "near_goal_threshold_factor",
+            "progress_pos_coef",
+            "progress_neg_coef",
+            "stage2_progress_pos_coef",
+            "time_penalty_base",
+            "time_penalty_step170",
+            "time_penalty_step250",
+            "time_penalty_step350",
+            "time_penalty_step450",
+            "ground_z_thresh",
+            "ground_penalty_early",
+            "ground_penalty_late",
+            "ground_early_step_cutoff",
+            "alt_band_margin_low",
+            "alt_band_margin_high",
+            "alt_band_coef",
+            "alt_below_min_coef",
+            "alt_above_max_coef",
+            "smooth_penalty_coef",
+            "stage1_velocity_goal_coef",
+            "stage2_velocity_goal_coef_far",
+            "stage2_velocity_goal_coef_near",
+            "stage2_velocity_goal_coef_danger",
+            "stage2_velocity_goal_clip",
+            "stage2_velocity_goal_far_dist",
+            "stage2_velocity_goal_near_dist",
+            "stage1_face_goal_coef",
+            "stage1_yaw_error_penalty_coef",
+            "stage1_backwards_yaw_penalty_coef",
+            "stage1_backwards_yaw_speed_gate",
+            "stage2_yaw_align_gain",
+            "stage2_yaw_align_penalty_coef",
+            "stage2_backwards_yaw_penalty_coef",
+            "stage2_backwards_yaw_dot_thresh",
+            "stage2_backwards_yaw_speed_to_goal_thresh",
+            "stage2_backwards_yaw_horizontal_speed_thresh",
+            "yaw_rate_penalty_coef",
+            "stage1_goal_yaw_good_dot",
+            "stage1_goal_yaw_ok_dot",
+            "stage1_goal_yaw_bad_dot",
+            "stage1_goal_yaw_bonus_good",
+            "stage1_goal_yaw_bonus_ok",
+            "stage1_goal_yaw_penalty_bad",
+            "stage1_lateral_thresh",
+            "stage1_lateral_coef",
+            "stage1_fence_thresh",
+            "stage1_fence_coef",
+            "stage2_lateral_thresh",
+            "stage2_lateral_coef",
+            "stage2_fence_thresh",
+            "stage2_fence_coef",
+            "stage2_near_fence_penalty_coefs",
+            "start_zone_penalty_coef",
+            "start_penalty_after_steps",
+            "start_xy_radius",
+            "speed_penalty_thresh",
+            "speed_penalty_coef",
+            "fall_vz_thresh",
+            "fall_penalty_coef",
+            "pillar_safe_clearance",
+            "pillar_clearance_penalty_weight",
+            "pillar_danger_radius",
+            "pillar_zone_radius",
+            "pillar_too_close_penalty_coef",
+            "passed_pillar_reward",
+            "clearance_progress_reward",
+            "stage2_near_miss_clearance_min",
+            "stage2_near_miss_clearance_good",
+            "stage2_near_miss_reward_good",
+            "stage2_near_miss_reward_ok",
+            "obstacle_approach_depth_thresh",
+            "obstacle_approach_speed_thresh",
+            "obstacle_approach_coef",
+            "stage2_obstacle_slowdown_reward",
+            "stage2_obstacle_slowdown_depth_thresh",
+            "stage2_obstacle_slowdown_speed_drop",
+            "stage2_obstacle_slowdown_min_goal_speed",
+            "stage2_obstacle_visibility_reward",
+            "stage2_obstacle_visible_depth_min",
+            "stage2_obstacle_visible_depth_max",
+            "stage2_obstacle_visibility_safe_pillar_dist",
+            "stage2_obstacle_visibility_progress_gate",
+            "stage2_obstacle_visibility_end_step",
+            "stage2_pillar_bypass_offset_m",
+            "stage2_pillar_bypass_near_radius",
+            "stage2_pillar_bypass_near_reward",
+            "stage2_pillar_bypass_reach_reward",
+            "stage2_bypass_decision_reward",
+            "stage2_bypass_decision_min_align",
+            "stage2_bypass_decision_min_speed",
+            "stage2_bypass_progress_reward",
+            "stage2_bypass_progress_min_clearance_gain",
+            "stage2_pillar_ring_radius_margin",
+            "stage2_pillar_ring_near_radius",
+            "stage2_pillar_ring_near_reward",
+            "stage2_pillar_ring_reach_reward",
+            "stage2_pillar_ring_max_active_pillars",
+            "stage2_post_pillar_window_steps",
+            "stage2_post_pillar_fixation_penalty",
+            "stage2_post_pillar_goal_realign_reward",
+            "stage2_post_pillar_look_pillar_dot_thresh",
+            "stage2_post_pillar_look_goal_dot_thresh",
+            "stage2_post_pillar_speed_goal_thresh",
+            "stage1_subgoal_near_radius",
+            "stage1_subgoal_reach_radius",
+            "stage1_subgoal_near_reward",
+            "stage1_subgoal_reach_reward",
+            "stage1_subgoal_dist_min",
+            "stage1_subgoal_dist_max",
+            "clearance_body_safe",
+            "clearance_body_danger",
+            "clearance_soft_penalty_coef",
+            "clearance_danger_penalty_coef",
+            "collision_course_coef",
+            "reward_too_slow_after_steps",
+            "reward_too_slow_min_dist",
+            "reward_too_slow_min_speed",
+            "reward_too_slow_coef",
+            "stage2_pillar_attention_geom_reward",
+            "stage2_pillar_attention_geom_dot_thresh",
+            "stage2_pillar_attention_geom_min_dist",
+            "stage2_pillar_attention_geom_max_dist",
+            "stage2_pillar_attention_geom_min_progress",
+            "stage2_pillar_attention_normalize_by_count",
+            "stage2_pillar_attention_reference_count",
+            "stage2_pillar_first_look_reward",
+            "stage2_pillar_first_look_dot_thresh",
+            "stage2_pillar_first_look_min_dist",
+            "stage2_pillar_first_look_max_dist",
+            "stage2_pillar_first_look_min_progress",
+            "stage2_pillar_avoidance_track_reward",
+            "stage2_pillar_avoidance_track_max_steps",
+            "stage2_pillar_avoidance_track_dot_thresh",
+            "stage2_pillar_avoidance_track_min_dist",
+            "stage2_pillar_avoidance_track_max_dist",
+            "stage2_pillar_avoidance_track_min_progress",
+            "stage2_post_pillar_reward_max_steps_per_pillar",
+            "stage2_post_pillar_penalty_max_steps_per_pillar"
+          ],
+          "exported": true,
+          "lineCount": 193
+        }
+      ],
+      "imports": [
+        {
+          "source": "dataclasses",
+          "specifiers": [
+            "dataclass",
+            "field"
+          ]
+        }
+      ],
+      "exports": [
+        "RewardConfig"
+      ],
+      "totalLines": 198,
+      "hasStructuralAnalysis": true
+    },
+    "envs/__init__.py": {
+      "filePath": "envs/__init__.py",
+      "contentHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 1,
+      "hasStructuralAnalysis": true
+    },
+    "envs/drone_env.py": {
+      "filePath": "envs/drone_env.py",
+      "contentHash": "29bd515af161c236fc9779ca2058762f25f228382b034fc7bfb437c29a334e27",
+      "functions": [],
+      "classes": [
+        {
+          "name": "DroneObstacleEnv",
+          "methods": [
+            "__init__",
+            "reset",
+            "step",
+            "close"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 36
+        }
+      ],
+      "imports": [
+        {
+          "source": "gymnasium",
+          "specifiers": [
+            "gym"
+          ]
+        },
+        {
+          "source": "gymnasium",
+          "specifiers": [
+            "spaces"
+          ]
+        },
+        {
+          "source": "numpy",
+          "specifiers": [
+            "np"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.configs.env_config",
+          "specifiers": [
+            "EnvConfig"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.configs.pillar_config",
+          "specifiers": [
+            "PillarConfig"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.configs.reward_config",
+          "specifiers": [
+            "RewardConfig"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.envs.manager.train_manager",
+          "specifiers": [
+            "TrainManager"
+          ]
+        }
+      ],
+      "exports": [
+        "DroneObstacleEnv"
+      ],
+      "totalLines": 47,
+      "hasStructuralAnalysis": true
+    },
+    "envs/manager/__init__.py": {
+      "filePath": "envs/manager/__init__.py",
+      "contentHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 1,
+      "hasStructuralAnalysis": true
+    },
+    "envs/manager/action_manager.py": {
+      "filePath": "envs/manager/action_manager.py",
+      "contentHash": "624a3e40d6e2bd73b35bb8140b5cea27ddbbf5cb423661c6de5c2e792dea937d",
+      "functions": [],
+      "classes": [
+        {
+          "name": "ActionOutput",
+          "methods": [],
+          "properties": [
+            "vx",
+            "vy",
+            "vz",
+            "yaw_rate"
+          ],
+          "exported": true,
+          "lineCount": 5
+        },
+        {
+          "name": "ActionManager",
+          "methods": [
+            "__init__",
+            "reset",
+            "process"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 75
+        }
+      ],
+      "imports": [
+        {
+          "source": "dataclasses",
+          "specifiers": [
+            "dataclass"
+          ]
+        },
+        {
+          "source": "numpy",
+          "specifiers": [
+            "np"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.configs.env_config",
+          "specifiers": [
+            "EnvConfig"
+          ]
+        }
+      ],
+      "exports": [
+        "ActionOutput",
+        "ActionManager"
+      ],
+      "totalLines": 89,
+      "hasStructuralAnalysis": true
+    },
+    "envs/manager/logging_manager.py": {
+      "filePath": "envs/manager/logging_manager.py",
+      "contentHash": "95e0ed5d1345bf5682de6cd1489e7f2fe6f68fa3c6f483b2c3729e4857480274",
+      "functions": [],
+      "classes": [
+        {
+          "name": "LoggingManager",
+          "methods": [
+            "__init__",
+            "record_step",
+            "record_episode_end",
+            "log_episode_start",
+            "log_reset_timing",
+            "log_reset_warn",
+            "_fmt_xyz",
+            "_fmt_xy",
+            "_write_step_log",
+            "_log_eps_end_block",
+            "_log_eps_reward_summary",
+            "_write_ep_summary",
+            "_update_kstep_episode_metrics",
+            "_maybe_log_kstep_metrics",
+            "_log_collision_check_block",
+            "_current_log_block_path",
+            "_maybe_rotate_env_log",
+            "_reset_step_wall_gap_tracking",
+            "_build_log_path",
+            "_build_debug_log_path",
+            "_init_logger",
+            "_init_csv"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 541
+        }
+      ],
+      "imports": [
+        {
+          "source": "csv",
+          "specifiers": [
+            "csv"
+          ]
+        },
+        {
+          "source": "logging",
+          "specifiers": [
+            "logging"
+          ]
+        },
+        {
+          "source": "math",
+          "specifiers": [
+            "math"
+          ]
+        },
+        {
+          "source": "os",
+          "specifiers": [
+            "os"
+          ]
+        },
+        {
+          "source": "time",
+          "specifiers": [
+            "time"
+          ]
+        },
+        {
+          "source": "dataclasses",
+          "specifiers": [
+            "asdict",
+            "fields"
+          ]
+        },
+        {
+          "source": "typing",
+          "specifiers": [
+            "Optional"
+          ]
+        },
+        {
+          "source": "numpy",
+          "specifiers": [
+            "np"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.envs.manager.reward_manager",
+          "specifiers": [
+            "RewardComponents"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.utils.logger",
+          "specifiers": [
+            "setup_logger"
+          ]
+        }
+      ],
+      "exports": [
+        "LoggingManager"
+      ],
+      "totalLines": 592,
+      "hasStructuralAnalysis": true
+    },
+    "envs/manager/pillar_manager.py": {
+      "filePath": "envs/manager/pillar_manager.py",
+      "contentHash": "6db40508a8e1929fdf409f6849460392dbe18f9ed292798deb0bf480734a98be",
+      "functions": [],
+      "classes": [
+        {
+          "name": "PillarSnapshot",
+          "methods": [],
+          "properties": [
+            "nearest_dist",
+            "nearest_xy",
+            "all_positions",
+            "all_radii",
+            "is_collision",
+            "collision_type"
+          ],
+          "exported": true,
+          "lineCount": 7
+        },
+        {
+          "name": "PillarManager",
+          "methods": [
+            "__init__",
+            "_reset_episode_state",
+            "reset_episode",
+            "update",
+            "get_collision_snap",
+            "get_bypass_info",
+            "get_ring_info",
+            "get_attention_info",
+            "_pillar_pool_name",
+            "_ensure_pool_initialized",
+            "_sample_pillar_metadata",
+            "_setup_bypass_subgoals",
+            "_setup_ring_subgoals",
+            "_get_active_bypass_subgoal",
+            "_update_bypass_subgoals",
+            "_update_ring_subgoals",
+            "_compute_attention_reward",
+            "_compute_post_pillar_reward",
+            "_check_collision",
+            "_is_heading_into_pillar",
+            "_fence_margin_xy"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 1081
+        }
+      ],
+      "imports": [
+        {
+          "source": "math",
+          "specifiers": [
+            "math"
+          ]
+        },
+        {
+          "source": "dataclasses",
+          "specifiers": [
+            "dataclass"
+          ]
+        },
+        {
+          "source": "typing",
+          "specifiers": [
+            "Optional"
+          ]
+        },
+        {
+          "source": "numpy",
+          "specifiers": [
+            "np"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.configs.env_config",
+          "specifiers": [
+            "EnvConfig"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.configs.pillar_config",
+          "specifiers": [
+            "PillarConfig"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.configs.reward_config",
+          "specifiers": [
+            "RewardConfig"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.utils.bridge_factory",
+          "specifiers": [
+            "Spawner"
+          ]
+        }
+      ],
+      "exports": [
+        "PillarSnapshot",
+        "PillarManager"
+      ],
+      "totalLines": 1106,
+      "hasStructuralAnalysis": true
+    },
+    "envs/manager/reset_manager.py": {
+      "filePath": "envs/manager/reset_manager.py",
+      "contentHash": "ef292bf0336ba9addea4e7f9a1934afe8534262e73acfef9415b3945fff1f063",
+      "functions": [],
+      "classes": [
+        {
+          "name": "ResetDecision",
+          "methods": [],
+          "properties": [
+            "mode",
+            "reason",
+            "do_respawn_pillars"
+          ],
+          "exported": true,
+          "lineCount": 4
+        },
+        {
+          "name": "ResetManager",
+          "methods": [
+            "__init__",
+            "classify_reset",
+            "on_episode_end",
+            "get_reset_helpers",
+            "continuous_episode_reset",
+            "multi_env_fast_recover_episode_reset",
+            "hard_reset_fallback_episode_reset",
+            "rescue_then_continuous_reset",
+            "pre_episode_auto_yaw_to_goal",
+            "_teleport_to_target",
+            "_wait_gz_pose_near",
+            "_wait_after_teleport_settle",
+            "_wait_for_ekf_convergence",
+            "_arm_with_startup_retry",
+            "_mark_bridge_state_stale_after_hard_reset",
+            "_lift_warmup_before_episode",
+            "_startup_arm_sanity",
+            "_wait_for_startup_arm_sanity",
+            "_skip_ekf_renotify_if_estimator_unstable",
+            "_idle_spin",
+            "_zero_velocity_command",
+            "_continuous_reset_collision_anti_sink",
+            "_descend_to_safe_altitude",
+            "_descend_before_disarm",
+            "_reset_land_force_disarm",
+            "_compute_rescue_target_xy",
+            "_rescue_to_fence_interior_by_velocity",
+            "_classify_reset_action",
+            "_is_continuous_reset_reason",
+            "_should_use_multi_env_fast_reset",
+            "_is_shield_terminal_reason",
+            "_pose_near_start",
+            "_out_of_fence",
+            "_px4_estimator_insane",
+            "_wrap_pi"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 1021
+        }
+      ],
+      "imports": [
+        {
+          "source": "math",
+          "specifiers": [
+            "math"
+          ]
+        },
+        {
+          "source": "time",
+          "specifiers": [
+            "time"
+          ]
+        },
+        {
+          "source": "dataclasses",
+          "specifiers": [
+            "dataclass"
+          ]
+        },
+        {
+          "source": "numpy",
+          "specifiers": [
+            "np"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.configs.env_config",
+          "specifiers": [
+            "EnvConfig"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.utils.bridge_factory",
+          "specifiers": [
+            "ROSBridge"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.utils.logger",
+          "specifiers": [
+            "setup_logger"
+          ]
+        }
+      ],
+      "exports": [
+        "ResetDecision",
+        "ResetManager"
+      ],
+      "totalLines": 1040,
+      "hasStructuralAnalysis": true
+    },
+    "envs/manager/reward_manager.py": {
+      "filePath": "envs/manager/reward_manager.py",
+      "contentHash": "b762f0962bf98845ab4dc1b944fe76d442f368251d72cae9ad2af3263c62f5cc",
+      "functions": [],
+      "classes": [
+        {
+          "name": "RewardComponents",
+          "methods": [],
+          "properties": [
+            "progress",
+            "time",
+            "velocity_goal",
+            "heading_goal",
+            "ground",
+            "altitude",
+            "smooth",
+            "speed_penalty",
+            "fall_penalty",
+            "yaw_rate_penalty",
+            "yaw_align",
+            "face_progress",
+            "backwards_yaw",
+            "lateral",
+            "near_fence",
+            "start_zone",
+            "pillar_too_close",
+            "pillar_clearance_soft",
+            "pillar_passed",
+            "clearance_progress",
+            "near_miss",
+            "obstacle_approach",
+            "collision_course",
+            "clearance_body",
+            "stage1_subgoal",
+            "bypass_subgoal",
+            "ring_subgoal",
+            "bypass_decision",
+            "bypass_progress",
+            "obstacle_visibility",
+            "obstacle_slowdown",
+            "pillar_attention",
+            "post_pillar",
+            "near_pillar_speed",
+            "goal_tunnel_penalty",
+            "clearance_escape",
+            "fast_clean_dodge",
+            "too_slow_penalty",
+            "terminal",
+            "total"
+          ],
+          "exported": true,
+          "lineCount": 51
+        },
+        {
+          "name": "StepState",
+          "methods": [],
+          "properties": [
+            "pos",
+            "vel",
+            "yaw",
+            "prev_pos",
+            "prev_action",
+            "action",
+            "step_count",
+            "global_step",
+            "stage_index",
+            "dist_xy",
+            "prev_dist_xy",
+            "front_depth",
+            "depth_sector",
+            "nearest_pillar_dist",
+            "nearest_pillar_xy",
+            "pillar_collision_snap",
+            "bypass_subgoal_info",
+            "ring_subgoal_info",
+            "attention_info",
+            "reset_info",
+            "done_reason",
+            "goal_xy_radius",
+            "is_terminal",
+            "is_truncated",
+            "goal",
+            "start",
+            "num_pillars",
+            "horizontal_speed",
+            "min_depth",
+            "final_yaw_rate",
+            "yaw_error"
+          ],
+          "exported": true,
+          "lineCount": 33
+        },
+        {
+          "name": "RewardManager",
+          "methods": [
+            "__init__",
+            "reset_episode",
+            "compute",
+            "_reward_progress",
+            "_reward_time",
+            "_reward_altitude",
+            "_reward_smooth",
+            "_reward_velocity_goal",
+            "_reward_heading_goal",
+            "_reward_yaw_align",
+            "_reward_spatial_penalties",
+            "_reward_pillar_clearance",
+            "_reward_subgoals",
+            "_reward_bypass_decision",
+            "_reward_bypass_progress",
+            "_reward_pillar_behavior",
+            "_reward_terminal",
+            "_cross_track_error_xy",
+            "_fence_margin_xy"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 490
+        }
+      ],
+      "imports": [
+        {
+          "source": "dataclasses",
+          "specifiers": [
+            "dataclass",
+            "field"
+          ]
+        },
+        {
+          "source": "typing",
+          "specifiers": [
+            "Optional"
+          ]
+        },
+        {
+          "source": "numpy",
+          "specifiers": [
+            "np"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.configs.env_config",
+          "specifiers": [
+            "EnvConfig"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.configs.reward_config",
+          "specifiers": [
+            "RewardConfig"
+          ]
+        }
+      ],
+      "exports": [
+        "RewardComponents",
+        "StepState",
+        "RewardManager"
+      ],
+      "totalLines": 588,
+      "hasStructuralAnalysis": true
+    },
+    "envs/manager/train_manager.py": {
+      "filePath": "envs/manager/train_manager.py",
+      "contentHash": "4235c96709589d14f02c8c4a66e6118f1e5741cf97d2b6da03356a9522cfa470",
+      "functions": [],
+      "classes": [
+        {
+          "name": "StepResult",
+          "methods": [],
+          "properties": [
+            "obs",
+            "reward",
+            "terminated",
+            "truncated",
+            "info"
+          ],
+          "exported": true,
+          "lineCount": 6
+        },
+        {
+          "name": "TrainManager",
+          "methods": [
+            "__init__",
+            "close",
+            "reset",
+            "step_process",
+            "_generate_new_goal",
+            "_update_goal_xy_radius",
+            "_build_obs",
+            "_build_state_vector",
+            "_normalize_depth_frame",
+            "_compute_depth_sector_features",
+            "_reset_depth_history",
+            "_check_terminal",
+            "_out_of_fence",
+            "_px4_estimator_insane",
+            "_fence_margin_xy",
+            "_pose_near_start",
+            "_wrap_pi",
+            "get_isolation_info"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 657
+        }
+      ],
+      "imports": [
+        {
+          "source": "math",
+          "specifiers": [
+            "math"
+          ]
+        },
+        {
+          "source": "time",
+          "specifiers": [
+            "time"
+          ]
+        },
+        {
+          "source": "collections",
+          "specifiers": [
+            "deque"
+          ]
+        },
+        {
+          "source": "dataclasses",
+          "specifiers": [
+            "dataclass"
+          ]
+        },
+        {
+          "source": "typing",
+          "specifiers": [
+            "Optional"
+          ]
+        },
+        {
+          "source": "numpy",
+          "specifiers": [
+            "np"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.configs.env_config",
+          "specifiers": [
+            "EnvConfig"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.configs.pillar_config",
+          "specifiers": [
+            "PillarConfig"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.configs.reward_config",
+          "specifiers": [
+            "RewardConfig"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.envs.manager.action_manager",
+          "specifiers": [
+            "ActionManager",
+            "ActionOutput"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.envs.manager.logging_manager",
+          "specifiers": [
+            "LoggingManager"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.envs.manager.pillar_manager",
+          "specifiers": [
+            "PillarManager",
+            "PillarSnapshot"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.envs.manager.reset_manager",
+          "specifiers": [
+            "ResetManager",
+            "ResetDecision"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.envs.manager.reward_manager",
+          "specifiers": [
+            "RewardManager",
+            "StepState",
+            "RewardComponents"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.utils.bridge_factory",
+          "specifiers": [
+            "ROSBridge",
+            "Spawner"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.utils.logger",
+          "specifiers": [
+            "setup_logger"
+          ]
+        }
+      ],
+      "exports": [
+        "StepResult",
+        "TrainManager"
+      ],
+      "totalLines": 687,
+      "hasStructuralAnalysis": true
+    },
+    "envs/monitor.py": {
+      "filePath": "envs/monitor.py",
+      "contentHash": "816e1109964d819204870e9e677741c31bfe160af3941b1a9bcff204bf2d2851",
+      "functions": [],
+      "classes": [
+        {
+          "name": "TrainingMonitor",
+          "methods": [
+            "__init__",
+            "_on_training_start",
+            "_on_step",
+            "_log_progress",
+            "_append_progress_csv",
+            "_log_episode_summary",
+            "_on_training_end"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 282
+        }
+      ],
+      "imports": [
+        {
+          "source": "sys",
+          "specifiers": [
+            "sys"
+          ]
+        },
+        {
+          "source": "os",
+          "specifiers": [
+            "os"
+          ]
+        },
+        {
+          "source": "csv",
+          "specifiers": [
+            "csv"
+          ]
+        },
+        {
+          "source": "collections",
+          "specifiers": [
+            "deque"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.utils.logger",
+          "specifiers": [
+            "setup_logger",
+            "PROJECT_ROOT"
+          ]
+        },
+        {
+          "source": "numpy",
+          "specifiers": [
+            "np"
+          ]
+        },
+        {
+          "source": "time",
+          "specifiers": [
+            "time"
+          ]
+        },
+        {
+          "source": "stable_baselines3.common.callbacks",
+          "specifiers": [
+            "BaseCallback"
+          ]
+        }
+      ],
+      "exports": [
+        "TrainingMonitor"
+      ],
+      "totalLines": 296,
+      "hasStructuralAnalysis": true
+    },
+    "envs/policy.py": {
+      "filePath": "envs/policy.py",
+      "contentHash": "e35e2ffbe313cc2c991948dca64ed0e9a28886f2c7050d1dbda4bbf9516b7d43",
+      "functions": [],
+      "classes": [
+        {
+          "name": "DepthStateExtractor",
+          "methods": [
+            "__init__",
+            "forward"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 41
+        }
+      ],
+      "imports": [
+        {
+          "source": "torch",
+          "specifiers": [
+            "torch"
+          ]
+        },
+        {
+          "source": "torch.nn",
+          "specifiers": [
+            "nn"
+          ]
+        },
+        {
+          "source": "stable_baselines3.common.torch_layers",
+          "specifiers": [
+            "BaseFeaturesExtractor"
+          ]
+        }
+      ],
+      "exports": [
+        "DepthStateExtractor"
+      ],
+      "totalLines": 46,
+      "hasStructuralAnalysis": true
+    },
+    "safety/__init__.py": {
+      "filePath": "safety/__init__.py",
+      "contentHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 1,
+      "hasStructuralAnalysis": true
+    },
+    "safety/z3_shield.py": {
+      "filePath": "safety/z3_shield.py",
+      "contentHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 1,
+      "hasStructuralAnalysis": true
+    },
+    "train.py": {
+      "filePath": "train.py",
+      "contentHash": "789df3e9aea1299afccf3c42fe2dc6a9a15e4ed48c0269100defaf94228e3d3e",
+      "functions": [
+        {
+          "name": "make_env",
+          "params": [
+            "rank",
+            "num_pillars",
+            "curriculum_stage",
+            "run_id",
+            "total_envs",
+            "env_log_dir"
+          ],
+          "returnType": "Callable",
+          "exported": true,
+          "lineCount": 195
+        },
+        {
+          "name": "run_training",
+          "params": [
+            "stage"
+          ],
+          "returnType": "None",
+          "exported": true,
+          "lineCount": 268
+        },
+        {
+          "name": "main",
+          "params": [],
+          "returnType": "None",
+          "exported": true,
+          "lineCount": 6
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "logging",
+          "specifiers": [
+            "logging"
+          ]
+        },
+        {
+          "source": "multiprocessing",
+          "specifiers": [
+            "mp"
+          ]
+        },
+        {
+          "source": "os",
+          "specifiers": [
+            "os"
+          ]
+        },
+        {
+          "source": "time",
+          "specifiers": [
+            "time"
+          ]
+        },
+        {
+          "source": "datetime",
+          "specifiers": [
+            "datetime"
+          ]
+        },
+        {
+          "source": "typing",
+          "specifiers": [
+            "Callable"
+          ]
+        },
+        {
+          "source": "cv2",
+          "specifiers": [
+            "cv2"
+          ]
+        },
+        {
+          "source": "yaml",
+          "specifiers": [
+            "yaml"
+          ]
+        },
+        {
+          "source": "stable_baselines3",
+          "specifiers": [
+            "PPO"
+          ]
+        },
+        {
+          "source": "stable_baselines3.common.callbacks",
+          "specifiers": [
+            "CheckpointCallback"
+          ]
+        },
+        {
+          "source": "stable_baselines3.common.monitor",
+          "specifiers": [
+            "Monitor"
+          ]
+        },
+        {
+          "source": "stable_baselines3.common.vec_env",
+          "specifiers": [
+            "SubprocVecEnv"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.configs.env_config",
+          "specifiers": [
+            "EnvConfig"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.configs.pillar_config",
+          "specifiers": [
+            "PillarConfig"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.configs.reward_config",
+          "specifiers": [
+            "RewardConfig"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.envs.drone_env",
+          "specifiers": [
+            "DroneObstacleEnv"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.envs.policy",
+          "specifiers": [
+            "DepthStateExtractor"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.envs.monitor",
+          "specifiers": [
+            "TrainingMonitor"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.utils.bridge_factory",
+          "specifiers": [
+            "make_bridge",
+            "make_spawner"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.utils.logger",
+          "specifiers": [
+            "setup_logger"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.utils.checkpoint_utils",
+          "specifiers": [
+            "find_latest_checkpoint",
+            "load_stage_start_step",
+            "save_stage_start_step"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.utils.process_utils",
+          "specifiers": [
+            "start_gz_clock_bridge",
+            "start_gz_depth_bridge",
+            "start_gz_pose_bridge",
+            "start_microxrce_agent"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.utils.px4_manager",
+          "specifiers": [
+            "PX4InstanceManager"
+          ]
+        }
+      ],
+      "exports": [
+        "make_env",
+        "run_training",
+        "main"
+      ],
+      "totalLines": 517,
+      "hasStructuralAnalysis": true
+    },
+    "utils/__init__.py": {
+      "filePath": "utils/__init__.py",
+      "contentHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 1,
+      "hasStructuralAnalysis": true
+    },
+    "utils/bridge_factory.py": {
+      "filePath": "utils/bridge_factory.py",
+      "contentHash": "f0232965d4eb2e47339fd23ab648e10c0d45ac97d9511573573f1a9aeb21d9d0",
+      "functions": [
+        {
+          "name": "make_bridge",
+          "params": [
+            "gazebo_port",
+            "world",
+            "model_name",
+            "px4_ns",
+            "target_system",
+            "gz_partition"
+          ],
+          "exported": true,
+          "lineCount": 19
+        },
+        {
+          "name": "make_spawner",
+          "params": [
+            "world",
+            "gz_partition",
+            "verbose_pillar_verify"
+          ],
+          "exported": true,
+          "lineCount": 6
+        }
+      ],
+      "classes": [
+        {
+          "name": "NavState",
+          "methods": [],
+          "properties": [],
+          "exported": true,
+          "lineCount": 7
+        },
+        {
+          "name": "ROSBridge",
+          "methods": [
+            "__init__",
+            "enable_offboard_keepalive",
+            "_start_offboard_keepalive_thread",
+            "prime_visual_odometry_after_reset",
+            "close",
+            "_gz_env",
+            "_invalidate_gz_pose_cache",
+            "_px4_topic",
+            "_status_cb",
+            "_control_mode_cb",
+            "_ack_cb",
+            "_att_cb",
+            "_estimator_flags_cb",
+            "_failsafe_flags_cb",
+            "_depth_cb",
+            "_local_pos_cb",
+            "_global_pos_cb",
+            "_vehicle_command_result_name",
+            "_active_failsafe_flag_names",
+            "log_preflight_debug",
+            "_vo_time_us",
+            "_px4_timestamp_us",
+            "_publish_visual_odometry",
+            "publish_vo_burst",
+            "notify_ekf_teleport",
+            "_set_gz_pose",
+            "_convert_quat_enu_flu_to_ned_frd",
+            "_extract_pose_name_and_pose",
+            "_gz_entity_pose_cb",
+            "_gz_model_pose_cb",
+            "_start_pose_health_check",
+            "_start_ros_model_pose_listener",
+            "_start_gz_pose_listener",
+            "_start_native_gz_pose_listener",
+            "_gz_pose_v_cb",
+            "_start_gz_pose_parser_fallback",
+            "get_gazebo_position",
+            "get_linear_velocity",
+            "get_yaw",
+            "get_depth_84",
+            "is_flipped",
+            "send_velocity",
+            "_publish_velocity_setpoint",
+            "send_position_setpoint_ned",
+            "_publish_position_setpoint_ned",
+            "arm",
+            "disarm",
+            "wait_until_armed",
+            "wait_until_offboard",
+            "arm_and_takeoff",
+            "teleport_drone",
+            "wait_for_gazebo_pose",
+            "debug_gz_partition_topics",
+            "collided",
+            "tick",
+            "_px4_callback_freshness",
+            "has_fresh_px4_callbacks_after",
+            "wait_for_fresh_px4_callbacks",
+            "print_debug_status",
+            "_send_cmd",
+            "request_estimator_reset",
+            "request_ekf_gps_reset"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 2072
+        },
+        {
+          "name": "Spawner",
+          "methods": [
+            "__init__",
+            "_gz_env",
+            "spawn_pillar",
+            "move_pillar",
+            "move_pillars_batch",
+            "_scene_entity_names",
+            "_dynamic_pose_map",
+            "_pose_info_map",
+            "_topic_pose_map",
+            "_parse_pose_text_to_map",
+            "verify_pillars",
+            "_verify_pillars_from_snapshots",
+            "sample_random_field_metadata",
+            "spawn_random_field",
+            "clear_pillars"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 368
+        }
+      ],
+      "imports": [
+        {
+          "source": "time",
+          "specifiers": [
+            "time"
+          ]
+        },
+        {
+          "source": "rclpy",
+          "specifiers": [
+            "rclpy"
+          ]
+        },
+        {
+          "source": "rclpy.node",
+          "specifiers": [
+            "Node"
+          ]
+        },
+        {
+          "source": "rclpy.parameter",
+          "specifiers": [
+            "Parameter"
+          ]
+        },
+        {
+          "source": "rclpy.qos",
+          "specifiers": [
+            "QoSProfile",
+            "ReliabilityPolicy",
+            "HistoryPolicy",
+            "DurabilityPolicy"
+          ]
+        },
+        {
+          "source": "numpy",
+          "specifiers": [
+            "np"
+          ]
+        },
+        {
+          "source": "re",
+          "specifiers": [
+            "re"
+          ]
+        },
+        {
+          "source": "cv2",
+          "specifiers": [
+            "cv2"
+          ]
+        },
+        {
+          "source": "subprocess",
+          "specifiers": [
+            "subprocess"
+          ]
+        },
+        {
+          "source": "math",
+          "specifiers": [
+            "math"
+          ]
+        },
+        {
+          "source": "os",
+          "specifiers": [
+            "os"
+          ]
+        },
+        {
+          "source": "sys",
+          "specifiers": [
+            "sys"
+          ]
+        },
+        {
+          "source": "utils.logger",
+          "specifiers": [
+            "setup_logger"
+          ]
+        },
+        {
+          "source": "cv_bridge",
+          "specifiers": [
+            "CvBridge"
+          ]
+        },
+        {
+          "source": "threading",
+          "specifiers": [
+            "threading"
+          ]
+        },
+        {
+          "source": "px4_msgs.msg",
+          "specifiers": [
+            "OffboardControlMode",
+            "TrajectorySetpoint",
+            "VehicleCommand",
+            "VehicleAttitude",
+            "VehicleLocalPosition",
+            "VehicleGlobalPosition",
+            "VehicleStatus",
+            "VehicleControlMode",
+            "VehicleCommandAck",
+            "VehicleOdometry",
+            "EstimatorStatusFlags",
+            "FailsafeFlags"
+          ]
+        },
+        {
+          "source": "sensor_msgs.msg",
+          "specifiers": [
+            "Image"
+          ]
+        }
+      ],
+      "exports": [
+        "NavState",
+        "ROSBridge",
+        "Spawner",
+        "make_bridge",
+        "make_spawner"
+      ],
+      "totalLines": 2545,
+      "hasStructuralAnalysis": true
+    },
+    "utils/checkpoint_utils.py": {
+      "filePath": "utils/checkpoint_utils.py",
+      "contentHash": "8fd66d9a295faa0f7450568658215e53f321df7eb36d0167edc2b868fb2b689a",
+      "functions": [
+        {
+          "name": "find_latest_checkpoint",
+          "params": [
+            "checkpoint_dir",
+            "prefix"
+          ],
+          "returnType": "str | None",
+          "exported": true,
+          "lineCount": 39
+        },
+        {
+          "name": "_stage_start_step_metadata_path",
+          "params": [
+            "checkpoint_dir",
+            "stage"
+          ],
+          "returnType": "str",
+          "exported": true,
+          "lineCount": 11
+        },
+        {
+          "name": "load_stage_start_step",
+          "params": [
+            "checkpoint_dir",
+            "stage"
+          ],
+          "returnType": "int",
+          "exported": true,
+          "lineCount": 40
+        },
+        {
+          "name": "save_stage_start_step",
+          "params": [
+            "checkpoint_dir",
+            "stage",
+            "step",
+            "source_path"
+          ],
+          "returnType": "None",
+          "exported": true,
+          "lineCount": 42
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "json",
+          "specifiers": [
+            "json"
+          ]
+        },
+        {
+          "source": "logging",
+          "specifiers": [
+            "logging"
+          ]
+        },
+        {
+          "source": "os",
+          "specifiers": [
+            "os"
+          ]
+        },
+        {
+          "source": "time",
+          "specifiers": [
+            "time"
+          ]
+        }
+      ],
+      "exports": [
+        "find_latest_checkpoint",
+        "_stage_start_step_metadata_path",
+        "load_stage_start_step",
+        "save_stage_start_step"
+      ],
+      "totalLines": 153,
+      "hasStructuralAnalysis": true
+    },
+    "utils/gz_transport_client.py": {
+      "filePath": "utils/gz_transport_client.py",
+      "contentHash": "f96c294be3e577b1e17e1062917099dc21a1dbe858f7b41d5c12ec39f001fb77",
+      "functions": [
+        {
+          "name": "gz_partition_env",
+          "params": [
+            "gz_partition"
+          ],
+          "exported": true,
+          "lineCount": 14
+        },
+        {
+          "name": "gz_service_lock",
+          "params": [
+            "path",
+            "gz_partition"
+          ],
+          "exported": true,
+          "lineCount": 13
+        }
+      ],
+      "classes": [
+        {
+          "name": "GzTransportClient",
+          "methods": [
+            "__init__",
+            "available",
+            "_lock_context",
+            "_bool_response_ok",
+            "_request",
+            "make_pose_msg",
+            "set_pose",
+            "set_pose_vector",
+            "create_sdf",
+            "remove_model",
+            "scene_entity_names",
+            "subscribe_pose_v"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 237
+        }
+      ],
+      "imports": [
+        {
+          "source": "contextlib",
+          "specifiers": [
+            "contextlib"
+          ]
+        },
+        {
+          "source": "fcntl",
+          "specifiers": [
+            "fcntl"
+          ]
+        },
+        {
+          "source": "logging",
+          "specifiers": [
+            "logging"
+          ]
+        },
+        {
+          "source": "math",
+          "specifiers": [
+            "math"
+          ]
+        },
+        {
+          "source": "os",
+          "specifiers": [
+            "os"
+          ]
+        },
+        {
+          "source": "re",
+          "specifiers": [
+            "re"
+          ]
+        }
+      ],
+      "exports": [
+        "gz_partition_env",
+        "gz_service_lock",
+        "GzTransportClient"
+      ],
+      "totalLines": 301,
+      "hasStructuralAnalysis": true
+    },
+    "utils/logger.py": {
+      "filePath": "utils/logger.py",
+      "contentHash": "71155afd9cba863c6f01e3eeb556c4e3cb931d72eb4365ac37a1e593472dacbf",
+      "functions": [
+        {
+          "name": "_env_flag_enabled",
+          "params": [
+            "name"
+          ],
+          "returnType": "bool",
+          "exported": true,
+          "lineCount": 3
+        },
+        {
+          "name": "setup_logger",
+          "params": [
+            "name",
+            "log_file",
+            "level",
+            "console_level",
+            "force_console_debug",
+            "info_log_file",
+            "debug_log_file",
+            "file_prefix_allowlist"
+          ],
+          "exported": true,
+          "lineCount": 74
+        }
+      ],
+      "classes": [
+        {
+          "name": "_PrefixAllowFilter",
+          "methods": [
+            "__init__",
+            "filter"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 12
+        }
+      ],
+      "imports": [
+        {
+          "source": "logging",
+          "specifiers": [
+            "logging"
+          ]
+        },
+        {
+          "source": "sys",
+          "specifiers": [
+            "sys"
+          ]
+        },
+        {
+          "source": "os",
+          "specifiers": [
+            "os"
+          ]
+        },
+        {
+          "source": "rich.logging",
+          "specifiers": [
+            "RichHandler"
+          ]
+        }
+      ],
+      "exports": [
+        "_env_flag_enabled",
+        "_PrefixAllowFilter",
+        "setup_logger"
+      ],
+      "totalLines": 104,
+      "hasStructuralAnalysis": true
+    },
+    "utils/process_utils.py": {
+      "filePath": "utils/process_utils.py",
+      "contentHash": "ace9dc2c594a37206877e3d6bf408ce4fe1e553de2dbfa54108dd262aa4d9da5",
+      "functions": [
+        {
+          "name": "start_microxrce_agent",
+          "params": [
+            "rank",
+            "ros_domain_id"
+          ],
+          "returnType": "subprocess.Popen",
+          "exported": true,
+          "lineCount": 18
+        },
+        {
+          "name": "stop_bridge_process",
+          "params": [
+            "proc",
+            "timeout_term",
+            "timeout_kill"
+          ],
+          "returnType": "None",
+          "exported": true,
+          "lineCount": 40
+        },
+        {
+          "name": "start_gz_pose_bridge",
+          "params": [
+            "model_name",
+            "gz_partition",
+            "ros_domain_id"
+          ],
+          "returnType": "subprocess.Popen",
+          "exported": true,
+          "lineCount": 39
+        },
+        {
+          "name": "start_gz_clock_bridge",
+          "params": [
+            "gz_partition",
+            "ros_domain_id"
+          ],
+          "returnType": "subprocess.Popen",
+          "exported": true,
+          "lineCount": 25
+        },
+        {
+          "name": "start_gz_depth_bridge",
+          "params": [
+            "model_name",
+            "gz_partition",
+            "ros_domain_id"
+          ],
+          "returnType": "subprocess.Popen",
+          "exported": true,
+          "lineCount": 35
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "logging",
+          "specifiers": [
+            "logging"
+          ]
+        },
+        {
+          "source": "os",
+          "specifiers": [
+            "os"
+          ]
+        },
+        {
+          "source": "signal",
+          "specifiers": [
+            "signal"
+          ]
+        },
+        {
+          "source": "subprocess",
+          "specifiers": [
+            "subprocess"
+          ]
+        }
+      ],
+      "exports": [
+        "start_microxrce_agent",
+        "stop_bridge_process",
+        "start_gz_pose_bridge",
+        "start_gz_clock_bridge",
+        "start_gz_depth_bridge"
+      ],
+      "totalLines": 180,
+      "hasStructuralAnalysis": true
+    },
+    "utils/px4_manager.py": {
+      "filePath": "utils/px4_manager.py",
+      "contentHash": "f20a61e03424c6a6c0743c929ae35ec9ba719bbc672f8b3a1fe45bc557a12515",
+      "functions": [],
+      "classes": [
+        {
+          "name": "PX4InstanceManager",
+          "methods": [
+            "__init__",
+            "start",
+            "kill",
+            "close",
+            "_gz_env",
+            "remove_model",
+            "probe_model_set_pose",
+            "hard_reset"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 564
+        }
+      ],
+      "imports": [
+        {
+          "source": "logging",
+          "specifiers": [
+            "logging"
+          ]
+        },
+        {
+          "source": "os",
+          "specifiers": [
+            "os"
+          ]
+        },
+        {
+          "source": "subprocess",
+          "specifiers": [
+            "subprocess"
+          ]
+        },
+        {
+          "source": "time",
+          "specifiers": [
+            "time"
+          ]
+        },
+        {
+          "source": "typing",
+          "specifiers": [
+            "Optional"
+          ]
+        },
+        {
+          "source": "obstacle_avoidance.utils.process_utils",
+          "specifiers": [
+            "stop_bridge_process"
+          ]
+        }
+      ],
+      "exports": [
+        "PX4InstanceManager"
+      ],
+      "totalLines": 593,
+      "hasStructuralAnalysis": true
+    },
+    "utils/spawn_world.py": {
+      "filePath": "utils/spawn_world.py",
+      "contentHash": "b98491cdd3f026b1dd748066fa2cb34ad7493fd568f0c1b1dbf8eb7db8101d6a",
+      "functions": [
+        {
+          "name": "_log_gz_transport_fallback",
+          "params": [
+            "message"
+          ],
+          "exported": true,
+          "lineCount": 3
+        },
+        {
+          "name": "_client_from_env",
+          "params": [
+            "env"
+          ],
+          "exported": true,
+          "lineCount": 7
+        },
+        {
+          "name": "poisson_disk",
+          "params": [
+            "n",
+            "region",
+            "min_dist",
+            "max_tries",
+            "exclusion_zones"
+          ],
+          "exported": true,
+          "lineCount": 33
+        },
+        {
+          "name": "make_pillar_sdf",
+          "params": [
+            "name",
+            "x",
+            "y",
+            "radius",
+            "height"
+          ],
+          "exported": true,
+          "lineCount": 16
+        },
+        {
+          "name": "spawn_pillar",
+          "params": [
+            "name",
+            "x",
+            "y",
+            "radius",
+            "height",
+            "world_name",
+            "env"
+          ],
+          "exported": true,
+          "lineCount": 45
+        },
+        {
+          "name": "move_entity",
+          "params": [
+            "name",
+            "x",
+            "y",
+            "z",
+            "world_name",
+            "env",
+            "timeout_ms"
+          ],
+          "exported": true,
+          "lineCount": 50
+        },
+        {
+          "name": "_pose_vector_block",
+          "params": [
+            "name",
+            "x",
+            "y",
+            "z",
+            "yaw"
+          ],
+          "returnType": "str",
+          "exported": true,
+          "lineCount": 13
+        },
+        {
+          "name": "move_entities_batch",
+          "params": [
+            "poses",
+            "world_name",
+            "env",
+            "timeout_ms"
+          ],
+          "exported": true,
+          "lineCount": 83
+        },
+        {
+          "name": "clear_pillars",
+          "params": [
+            "num_to_check",
+            "world_name",
+            "name_prefix",
+            "env"
+          ],
+          "exported": true,
+          "lineCount": 27
+        },
+        {
+          "name": "sample_corridor_pillars",
+          "params": [
+            "start",
+            "goal",
+            "num_pillars",
+            "corridor_half_width",
+            "min_pillar_dist",
+            "start_clearance",
+            "goal_clearance",
+            "t_min",
+            "t_max",
+            "spawn_bounds",
+            "corridor_jitter_deg"
+          ],
+          "exported": true,
+          "lineCount": 73
+        },
+        {
+          "name": "sample_random_field_metadata",
+          "params": [
+            "num_pillars",
+            "region",
+            "min_dist",
+            "start",
+            "goal",
+            "name_prefix",
+            "corridor_half_width",
+            "start_clearance",
+            "goal_clearance",
+            "t_min",
+            "t_max",
+            "spawn_bounds",
+            "pillar_radius_range",
+            "pillar_height_range",
+            "corridor_jitter_deg"
+          ],
+          "exported": true,
+          "lineCount": 56
+        },
+        {
+          "name": "spawn_random_field",
+          "params": [
+            "num_pillars",
+            "region",
+            "min_dist",
+            "world_name",
+            "start",
+            "goal",
+            "name_prefix",
+            "env",
+            "corridor_half_width",
+            "start_clearance",
+            "goal_clearance",
+            "t_min",
+            "t_max",
+            "spawn_bounds",
+            "pillar_radius_range",
+            "pillar_height_range"
+          ],
+          "exported": true,
+          "lineCount": 47
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "numpy",
+          "specifiers": [
+            "np"
+          ]
+        },
+        {
+          "source": "subprocess",
+          "specifiers": [
+            "subprocess"
+          ]
+        },
+        {
+          "source": "tempfile",
+          "specifiers": [
+            "tempfile"
+          ]
+        },
+        {
+          "source": "os",
+          "specifiers": [
+            "os"
+          ]
+        },
+        {
+          "source": "time",
+          "specifiers": [
+            "time"
+          ]
+        }
+      ],
+      "exports": [
+        "_log_gz_transport_fallback",
+        "_client_from_env",
+        "poisson_disk",
+        "make_pillar_sdf",
+        "spawn_pillar",
+        "move_entity",
+        "_pose_vector_block",
+        "move_entities_batch",
+        "clear_pillars",
+        "sample_corridor_pillars",
+        "sample_random_field_metadata",
+        "spawn_random_field"
+      ],
+      "totalLines": 487,
+      "hasStructuralAnalysis": true
+    }
+  }
+}

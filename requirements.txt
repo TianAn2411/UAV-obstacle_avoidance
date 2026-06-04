@@ -1,0 +1,13 @@
+# Install into ~/drone_rl_env:
+#   source ~/drone_rl_env/bin/activate
+#   pip install -r obstacle_avoidance/requirements.txt
+#
+# Note: rclpy, px4_msgs, cv_bridge are ROS2 packages — install via colcon, not pip.
+
+stable-baselines3>=2.8.0
+gymnasium>=1.2.0
+numpy>=1.26.0,<2.0
+opencv-python>=4.13.0
+rich>=15.0.0
+PyYAML>=6.0
+torch>=2.11.0

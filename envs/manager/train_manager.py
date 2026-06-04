@@ -167,7 +167,9 @@ class TrainManager:
             self._pillar_manager.reset_episode(self._start, self._goal)
 
         # Common finalize
-        self._action_manager.reset()
+        self._action_manager.reset(
+            hold_alt=self.ecfg.freeze_vz_hold_alt if self.ecfg.freeze_vz else None
+        )
         self._reward_manager.reset_episode()
         self._reset_manager.on_episode_end(reason)
 
@@ -350,6 +352,7 @@ class TrainManager:
                 done_reason=done_reason,
                 episode_reward=self._ep_reward_sum,
                 steps=self._step_count + 1,
+                pos=pos,
             )
 
         # 7. Build obs

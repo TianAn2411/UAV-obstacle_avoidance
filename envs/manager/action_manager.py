@@ -19,9 +19,12 @@ class ActionManager:
     def __init__(self, cfg: EnvConfig) -> None:
         self._cfg = cfg
         self._cmd_vel = np.zeros(4, dtype=np.float32)  # smoothed command state
+        self._hold_alt: float = cfg.takeoff_assist_alt  # target altitude for freeze_vz hold
 
-    def reset(self) -> None:
+    def reset(self, hold_alt: float | None = None) -> None:
         self._cmd_vel = np.zeros(4, dtype=np.float32)
+        if hold_alt is not None:
+            self._hold_alt = hold_alt
 
     # ------------------------------------------------------------------ #
     # Main interface                                                      #
@@ -46,9 +49,9 @@ class ActionManager:
         target_vx = float(raw[0]) * max_vx
         target_vy = float(raw[1]) * max_vy
         # action[2] positive = fly up (ENU); bridge converts to PX4 NED internally
+        # freeze_vz: feed 0 into EMA to drain buffer; P-controller overrides output below
         if cfg.freeze_vz:
             target_vz = 0.0
-            self._cmd_vel[2] = 0.0  # flush EMA buffer — prevents spike when vz unlocks
         else:
             target_vz = float(raw[2]) * (cfg.vz_up_limit if raw[2] >= 0.0 else cfg.vz_down_limit)
         target_yr = float(raw[3]) * cfg.yaw_rate_limit
@@ -74,6 +77,11 @@ class ActionManager:
         vy = float(self._cmd_vel[1])
         vz = float(self._cmd_vel[2])
         yr = float(self._cmd_vel[3])
+
+        # --- freeze_vz: override vz with P-controller output, bypass smoothed value ---
+        if cfg.freeze_vz:
+            alt_error = self._hold_alt - altitude
+            vz = float(np.clip(alt_error * cfg.freeze_vz_kp, -cfg.vz_down_limit, cfg.vz_up_limit))
 
         # --- Takeoff assist: lock XY/yaw and command climb until airborne ---
         # Applied after smoothing; overrides cmd but does NOT update _cmd_vel state

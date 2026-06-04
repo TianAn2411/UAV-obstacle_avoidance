@@ -45,6 +45,7 @@ def make_env(
     run_id: str,
     total_envs: int,
     env_log_dir: str | None = None,
+    stage_conf: dict | None = None,
 ) -> Callable:
     def _init():
         # 1. Thread limits — old L992-998
@@ -234,13 +235,21 @@ def make_env(
         # 8. Construct DroneObstacleEnv — old L1176-1197
         ecfg = EnvConfig()
         _ecfg_fields = {f.name for f in dataclasses.fields(EnvConfig)}
-        for key, val in conf.items():
+        for key, val in (stage_conf or {}).items():
             if key in _ecfg_fields:
                 setattr(ecfg, key, val)
         rcfg = RewardConfig()
         pcfg = PillarConfig(num_pillars=num_pillars)
 
-        rank_log_dir = os.path.join(env_log_dir, f"env_{rank}") if env_log_dir else None
+        # Log dir: env_logs/env_{rank}/stage{N}_{ts}/
+        if env_log_dir:
+            # env_log_dir = env_logs/stage{N}_{ts} — remap to env_logs/env_{rank}/stage{N}_{ts}
+            base = os.path.dirname(env_log_dir)          # env_logs/
+            ts_folder = os.path.basename(env_log_dir)    # stage{N}_{ts}
+            rank_log_dir = os.path.join(base, f"env_{rank}", ts_folder)
+            os.makedirs(rank_log_dir, exist_ok=True)
+        else:
+            rank_log_dir = None
         env = DroneObstacleEnv(bridge, spawner, ecfg, rcfg, pcfg, env_id=rank, log_dir=rank_log_dir)
 
         # 9. Wrap with Monitor — old L1199
@@ -280,7 +289,8 @@ def run_training(stage: int = 1) -> None:
     os.makedirs(log_dir, exist_ok=True)
 
     run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    env_log_dir = os.path.join(log_dir, "env_logs", f"stage{stage}_{run_ts}")
+    env_log_base = os.path.join(log_dir, "env_logs")  # env_logs/env_{rank}/stage{N}_{ts}/
+    env_log_dir = os.path.join(env_log_base, f"stage{stage}_{run_ts}")
     os.makedirs(env_log_dir, exist_ok=True)
     setup_logger(
         "obstacle_avoidance",
@@ -373,7 +383,7 @@ def run_training(stage: int = 1) -> None:
 
     # --- Build vectorised env ---
     env = SubprocVecEnv([
-        make_env(i, conf["num_pillars"], stage, f"stage{stage}", n_envs, env_log_dir)
+        make_env(i, conf["num_pillars"], stage, f"stage{stage}", n_envs, env_log_dir, stage_conf=conf)
         for i in range(n_envs)
     ])
 

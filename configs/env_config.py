@@ -54,6 +54,8 @@ class EnvConfig:
     yaw_rate_limit: float = 0.5
     action_smoothing: float = 0.35
     freeze_vz: bool = False  # Stage 0: lock vz=0, drone learns horizontal nav only
+    freeze_vz_hold_alt: float = 2.0  # target altitude (m) to hold when freeze_vz=True
+    freeze_vz_kp: float = 2.0        # P-gain for altitude hold controller
 
     # Altitude safe band
     alt_min: float = 0.8

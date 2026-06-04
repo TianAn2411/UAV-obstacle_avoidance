@@ -150,7 +150,7 @@ class LoggingManager:
         # k-step metrics
         self._maybe_log_kstep_metrics()
 
-    def record_episode_end(self, done_reason: str, episode_reward: float, steps: int) -> None:
+    def record_episode_end(self, done_reason: str, episode_reward: float, steps: int, pos: np.ndarray | None = None) -> None:
         """Write episode end logs and CSV row, then reset accumulators."""
         self._ep_reward_sum = float(episode_reward)  # authoritative value from caller
         self._ep_step_count = int(steps)
@@ -158,7 +158,7 @@ class LoggingManager:
 
         self._log_eps_end_block(
             done_reason=done_reason,
-            pos=np.zeros(3, dtype=np.float32),  # pos not tracked here; use zero
+            pos=pos if pos is not None else np.zeros(3, dtype=np.float32),
             dist_xy=self._ep_final_dist_xy,
             reward=episode_reward,
             wall_time=wall_time,

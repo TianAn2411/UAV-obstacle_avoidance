@@ -243,7 +243,7 @@ class ROSBridge(Node):
 
         self.create_subscription(
             VehicleOdometry,
-            f"{self._px4_ns}/fmu/out/vehicle_odometry",
+            f"{self.px4_ns}/fmu/out/vehicle_odometry",
             self._odom_cb,
             self.qos,
         )

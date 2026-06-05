@@ -132,7 +132,7 @@ class ROSBridge(Node):
 
         self.gz_pos = np.zeros(3, dtype=np.float32)
         self.gz_quat = [1.0, 0.0, 0.0, 0.0]  # [w, x, y, z] ENU/FLU, identity default
-        self.gz_pose_ready = True  # stream spawn-origin pose immediately; overwritten on first callback
+        self.gz_pose_ready = True   # stream zeros until first Gz callback; EKF prefers continuous VIO over gaps
         self.gz_pose_stamp = 0.0
         self.gz_pose_source = "default_spawn"
         self._gz_lock = threading.Lock()
@@ -148,7 +148,6 @@ class ROSBridge(Node):
         self._last_gz_pos_for_vo_vel = None
         self._last_gz_vel_stamp_s = None
         self._vo_velocity_max_m_s = 15.0
-        self._vo_publish_lock = threading.Lock()
         self._vo_stop = False
         self._vo_thread = None
         self._spin_stop = False
@@ -170,6 +169,7 @@ class ROSBridge(Node):
         self._last_ack_msg = None
         self._last_ack_wall = 0.0
         self._last_preflight_debug_wall = 0.0
+        self._preflight_was_ever_ok = False
         self._last_gz_pose_debug_log = 0.0
         self._last_local_pos_valid = {
             "xy_valid": False,
@@ -299,7 +299,7 @@ class ROSBridge(Node):
 
         self.keepalive_enabled = False
         self.keepalive_period = float(os.environ.get("KEEPALIVE_PERIOD", "0.05"))  # 20Hz default
-        self.keepalive_stale_time = float(os.environ.get("KEEPALIVE_STALE_TIME", "0.6"))
+        self.keepalive_stale_time = float(os.environ.get("KEEPALIVE_STALE_TIME", "1.0"))  # 1 second stale threshold default
         self.keepalive_stale_hold_after_s = float(os.environ.get("KEEPALIVE_STALE_HOLD_AFTER_S", "30.0"))
         self.allow_keepalive_position_stale = False
         self.keepalive_target_alt = 2.8
@@ -324,7 +324,6 @@ class ROSBridge(Node):
         self._keepalive_thread = None
         self._keepalive_stop = False
         self._start_offboard_keepalive_thread()
-
         self._start_gz_pose_listener()
 
     def enable_offboard_keepalive(self, enabled=False):
@@ -356,8 +355,7 @@ class ROSBridge(Node):
         next_t = time.monotonic()
         while not self._vo_stop:
             try:
-                with self._vo_publish_lock:
-                    self._publish_visual_odometry()
+                self._publish_visual_odometry()
             except Exception as exc:
                 try:
                     self.logger.warning(f"[VO THREAD] publish failed: {exc}")
@@ -383,7 +381,7 @@ class ROSBridge(Node):
             watchdog_tick = 0
             while not self._spin_stop:
                 try:
-                    self._spin_once(0.0)
+                    self._spin_once()
                 except Exception:
                     pass
                 # XRCE agent watchdog: poll every ~5s (100 iters at 20Hz)
@@ -419,12 +417,11 @@ class ROSBridge(Node):
         )
         self._spin_thread.start()
 
-    def _spin_once(self, timeout_sec=0.05):
-        with self._spin_lock:
-            try:
-                rclpy.spin_once(self, timeout_sec=timeout_sec)
-            except Exception:
-                pass
+    def _spin_once(self):
+        try:
+            rclpy.spin_once(self, timeout_sec=0.0)
+        except Exception:
+            pass
 
     def _start_offboard_keepalive_thread(self):
         if self._keepalive_thread is not None:
@@ -447,7 +444,6 @@ class ROSBridge(Node):
                     with self._last_setpoint_lock:
                         mode = self._last_setpoint_mode
                         last_t = float(self._last_setpoint_time)
-                        vel_cmd = self._last_velocity_cmd
                         pos_cmd = self._last_position_cmd
 
                     age = now - last_t if last_t > 0.0 else float("inf")
@@ -601,8 +597,7 @@ class ROSBridge(Node):
         t0 = time.monotonic()
         while time.monotonic() - t0 < duration:
             try:
-                with self._vo_publish_lock:
-                    self._publish_visual_odometry()
+                self._publish_visual_odometry()
             except Exception as exc:
                 self.get_logger().warning(f"[EV PRIME] publish failed: {exc}")
             self.tick(0.02)
@@ -613,18 +608,31 @@ class ROSBridge(Node):
         self._stall_pos_locked = False
         self.last_keepalive_stale_age = 0.0
         self._vo_stop = True
+        self._spin_stop = True
 
         if self._keepalive_thread is not None:
             try:
                 self._keepalive_thread.join(timeout=1.0)
-            except Exception:
-                pass
+                if self._keepalive_thread.is_alive():
+                    self.logger.warning("[CLOSE] keepalive_thread failed to join")
+            except Exception as e:
+                self.logger.warning(f"[CLOSE] Error joining keepalive_thread: {e}")
 
         if self._vo_thread is not None:
             try:
                 self._vo_thread.join(timeout=0.5)
-            except Exception:
-                pass
+                if self._vo_thread.is_alive():
+                    self.logger.warning("[CLOSE] vo_thread failed to join")
+            except Exception as e:
+                self.logger.warning(f"[CLOSE] Error joining vo_thread: {e}")
+
+        if getattr(self, '_spin_thread', None) is not None:
+            try:
+                self._spin_thread.join(timeout=1.0)
+                if self._spin_thread.is_alive():
+                    self.logger.warning("[CLOSE] spin_thread failed to join")
+            except Exception as e:
+                self.logger.warning(f"[CLOSE] Error joining spin_thread: {e}")
 
         try:
             self.destroy_node()
@@ -659,13 +667,6 @@ class ROSBridge(Node):
     # ============================================================
 
     def _status_cb(self, msg):
-        # Debug: log first few callbacks to verify subscription works
-        if not hasattr(self, '_status_cb_count'):
-            self._status_cb_count = 0
-        self._status_cb_count += 1
-        if self._status_cb_count <= 3:
-            self.logger.info(f"[DEBUG] _status_cb called (count={self._status_cb_count}) model={self.model_name} ns={self.px4_ns}")
-
         old_preflight_ok = bool(self.preflight_ok)
         self._last_status_wall = time.monotonic()
         self._last_status_px4_ts = int(getattr(msg, "timestamp", 0))
@@ -684,9 +685,12 @@ class ROSBridge(Node):
         self.failsafe_defer_state = int(getattr(msg, "failsafe_defer_state", -1))
         self.safety_off = bool(getattr(msg, "safety_off", False))
         self.gcs_connection_lost = bool(getattr(msg, "gcs_connection_lost", False))
-        if not self.preflight_ok and (
-            old_preflight_ok
-            or time.monotonic() - self._last_preflight_debug_wall > 2.0
+        if self.preflight_ok:
+            self._preflight_was_ever_ok = True
+        elif (
+            old_preflight_ok                                    # True→False transition: always log
+            or (self._preflight_was_ever_ok                    # sustained False after healthy: throttled
+                and time.monotonic() - self._last_preflight_debug_wall > 2.0)
         ):
             self.log_preflight_debug(
                 context="[PX4 STATUS PREFLIGHT FALSE]",
@@ -960,11 +964,8 @@ class ROSBridge(Node):
         """Push Ground Truth Position + Orientation từ Gazebo vào PX4 EKF (NED + EV yaw).
 
         Called from _vo_thread_worker (30Hz) and optionally from burst callers on the
-        main thread; _vo_publish_lock serializes concurrent invocations.
+        main thread.
         """
-        if not self.gz_pose_ready:
-            return
-
         clock_ns = int(self.get_clock().now().nanoseconds)
         if self._use_sim_time and clock_ns <= 0:
             return
@@ -1059,9 +1060,8 @@ class ROSBridge(Node):
         Velocity cache is reset by notify_ekf_teleport() before these bursts.
         """
         for _ in range(count):
-            with self._vo_publish_lock:
-                self._publish_visual_odometry()
-            self._spin_once(interval)
+            self._publish_visual_odometry()
+            self._spin_once()
 
     def notify_ekf_teleport(self, prime_count=30, reset_count=100, interval=0.01):
         """Báo EKF sau Gazebo teleport dùng NED + EV yaw strategy.
@@ -1299,8 +1299,8 @@ class ROSBridge(Node):
         model_pose_topic = f"/model/{self.model_name}/pose"
         dynamic_pose_topic = f"/world/{self.world_name}/dynamic_pose/info"
 
-        if self._start_native_gz_pose_listener(dynamic_pose_topic):
-            return
+        # if self._start_native_gz_pose_listener(dynamic_pose_topic):
+        #     return
 
         self.logger.warning(
             f"[GZ POSE] native gz transport unavailable; falling back to ROS model pose. "
@@ -1747,7 +1747,7 @@ class ROSBridge(Node):
             else:
                 self.send_velocity(0.0, 0.0, 0.0, 0.0)
 
-            self._spin_once(0.03)
+            self._spin_once()
 
             if self.is_armed:
                 return True
@@ -1771,7 +1771,7 @@ class ROSBridge(Node):
             else:
                 self.send_velocity(0.0, 0.0, 0.0, 0.0)
 
-            self._spin_once(0.03)
+            self._spin_once()
 
             if self.offboard_enabled or self.nav_state == NavState.OFFBOARD:
                 return True
@@ -1799,7 +1799,7 @@ class ROSBridge(Node):
             self.logger.info("[ARM] already armed/offboard, continue.")
             for _ in range(10):
                 self.send_velocity(0.0, 0.0, 0.0, 0.0)
-                self._spin_once(0.05)
+                self._spin_once()
             self.enable_offboard_keepalive(True)
             return True
 
@@ -1813,7 +1813,7 @@ class ROSBridge(Node):
         # 1. Stream velocity setpoint trước khi set OFFBOARD (PX4 yêu cầu stream > 0.5s)
         for _ in range(50):
             self.send_velocity(0.0, 0.0, 0.0, 0.0)
-            self._spin_once(0.03)
+            self._spin_once()
 
         # 2. Chuyển sang OFFBOARD mode
         if not (self.offboard_enabled or self.nav_state == NavState.OFFBOARD):
@@ -1822,7 +1822,7 @@ class ROSBridge(Node):
             t0 = time.monotonic()
             while time.monotonic() - t0 < 2.0:
                 self.send_velocity(0.0, 0.0, 1.8, 0.0)
-                self._spin_once(0.05)
+                self._spin_once()
                 if self.offboard_enabled or self.nav_state == NavState.OFFBOARD:
                     offboard_ok = True
                     break
@@ -1838,7 +1838,7 @@ class ROSBridge(Node):
             armed_ok = False
             while time.monotonic() - t0 < 2.0:
                 self.send_velocity(0.0, 0.0, 1.5, 0.0)
-                self._spin_once(0.05)
+                self._spin_once()
                 if self.is_armed:
                     armed_ok = True
                     break
@@ -1853,7 +1853,7 @@ class ROSBridge(Node):
         while time.monotonic() - takeoff_t0 < 15.0:
             # Gửi liên tục vận tốc đi lên (vz = 1.5 m/s trong hệ quy chiếu ENU)
             self.send_velocity(0.0, 0.0, 1.8, 0.0)
-            self._spin_once(0.05)
+            self._spin_once()
 
             gz_alt = float(self.get_gazebo_position()[2])
             best_alt = max(best_alt, gz_alt)
@@ -1868,13 +1868,13 @@ class ROSBridge(Node):
         # Settle thêm 1 chút cho ổn định bằng cách phanh lại (vz = 0)
         for _ in range(10):
             self.send_velocity(0.0, 0.0, 0.0, 0.0)
-            self._spin_once(0.03)
+            self._spin_once()
 
         if best_alt < 0.35:
             self.logger.error(f"[ARM] takeoff did not lift enough, fail. best_alt={best_alt:.2f}")
             # Thử thêm 1 lần hích cực mạnh cuối cùng thay vì bỏ cuộc luôn
             self.send_velocity(0.0, 0.0, 3.0, 0.0)
-            self._spin_once(0.5)
+            self._spin_once()
             return False
 
         self.logger.debug(f"[ARM] OFFBOARD velocity takeoff done. best_alt={best_alt:.2f}")
@@ -1903,7 +1903,7 @@ class ROSBridge(Node):
         ex.shutdown(wait=False)
         deadline = time.monotonic() + float(max_wait_s)
         while not fut.done():
-            self._spin_once(0.005)
+            self._spin_once()
             if time.monotonic() > deadline:
                 self.logger.warning(
                     f"[GZ SPIN WRAP] {getattr(fn, '__name__', str(fn))} still running "
@@ -2053,7 +2053,7 @@ class ROSBridge(Node):
         t0 = time.monotonic()
 
         while time.monotonic() - t0 < timeout:
-            self._spin_once(0.05)
+            self._spin_once()
 
             with self._gz_lock:
                 pos = self.gz_pos.copy()
@@ -2172,8 +2172,10 @@ class ROSBridge(Node):
                 break
 
             remaining = end_time - time.monotonic()
+            if remaining <= 0:
+                break
             spin_t0 = time.monotonic()
-            self._spin_once(min(0.005, max(0.0, remaining)))
+            self._spin_once()
             spin_dt = time.monotonic() - spin_t0
             spin_count += 1
             max_spin = max(max_spin, spin_dt)
@@ -2364,7 +2366,7 @@ class ROSBridge(Node):
 
         for _ in range(3):
             self._send_cmd(220, p1=0.0, p2=0.0, p7=0.0)
-            self._spin_once(0.05)
+            self._spin_once()
 
 
 class Spawner:

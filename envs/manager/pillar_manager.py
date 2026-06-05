@@ -647,7 +647,7 @@ class PillarManager:
         dist_alpha = float(np.clip((dist_xy - r.stage1_subgoal_dist_min) / dist_span, 0.0, 1.0))
         self._stage1_reward_scale = 1.0  # fixed scale; configurable via reward_config if needed
 
-        n = 2 if dist_xy < 10.0 else (3 if dist_xy < 11.0 else 4)
+        n = max(1, int(r.stage1_subgoal_count))
         for i in range(1, n + 1):
             t = float(i) / float(n + 1)
             sg_xy = (1.0 - t) * start_xy + t * goal_xy

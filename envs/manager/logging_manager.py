@@ -84,6 +84,7 @@ class LoggingManager:
         self._ep_final_dist_xy: float = 0.0
         self._ep_min_dist_xy: float = math.inf
         self._ep_path_len_xy: float = 0.0
+        self._ep_prev_pos_xy: np.ndarray | None = None
         self._ep_start_wall: float = time.time()
 
         # per-component reward sums (keyed by RewardComponents field name)
@@ -134,6 +135,12 @@ class LoggingManager:
         if d < self._ep_min_dist_xy:
             self._ep_min_dist_xy = d
 
+        # accumulate XY path length
+        p = np.asarray(pos, dtype=np.float64)
+        if self._ep_prev_pos_xy is not None:
+            self._ep_path_len_xy += float(np.linalg.norm(p[:2] - self._ep_prev_pos_xy))
+        self._ep_prev_pos_xy = p[:2].copy()
+
         # log-file rotation check
         self._maybe_rotate_env_log()
 
@@ -176,6 +183,7 @@ class LoggingManager:
         self._ep_final_dist_xy = 0.0
         self._ep_min_dist_xy = math.inf
         self._ep_path_len_xy = 0.0
+        self._ep_prev_pos_xy = None
         self._ep_start_wall = time.time()
         for key in self._ep_component_sums:
             self._ep_component_sums[key] = 0.0
@@ -187,6 +195,8 @@ class LoggingManager:
         self._ep_start_dist_xy = float(dist_xy)
         self._ep_final_dist_xy = float(dist_xy)
         self._ep_min_dist_xy = float(dist_xy)
+        self._ep_path_len_xy = 0.0
+        self._ep_prev_pos_xy = None
         self._ep_start_wall = time.time()
         self._reset_step_wall_gap_tracking()
 

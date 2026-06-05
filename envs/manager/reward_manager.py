@@ -22,7 +22,6 @@ class RewardComponents:
     yaw_rate_penalty: float = 0.0
     # Goal alignment
     yaw_align: float = 0.0
-    face_progress: float = 0.0
     backwards_yaw: float = 0.0
     # Spatial penalties
     lateral: float = 0.0
@@ -34,7 +33,6 @@ class RewardComponents:
     pillar_passed: float = 0.0
     clearance_progress: float = 0.0
     near_miss: float = 0.0
-    obstacle_approach: float = 0.0
     collision_course: float = 0.0
     clearance_body: float = 0.0
     # Subgoal rewards
@@ -49,9 +47,6 @@ class RewardComponents:
     pillar_attention: float = 0.0
     post_pillar: float = 0.0
     near_pillar_speed: float = 0.0
-    goal_tunnel_penalty: float = 0.0
-    clearance_escape: float = 0.0
-    fast_clean_dodge: float = 0.0
     too_slow_penalty: float = 0.0
     # Terminal
     terminal: float = 0.0
@@ -137,8 +132,8 @@ class RewardManager:
         c.smooth = self._reward_smooth(state.action, state.prev_action)
         c.yaw_rate_penalty = float(self._r.yaw_rate_penalty_coef) * abs(state.final_yaw_rate)
 
-        # --- Yaw alignment ---
-        c.yaw_align = self._reward_yaw_align(state)
+        # --- Yaw alignment (includes progress amplification) ---
+        c.yaw_align = self._reward_yaw_align(state, progress)
 
         # --- Spatial penalties ---
         c.lateral, c.near_fence, c.start_zone = self._reward_spatial_penalties(state)
@@ -147,8 +142,8 @@ class RewardManager:
         speed = float(np.linalg.norm(state.vel))
         if speed > self._r.speed_penalty_thresh:
             c.speed_penalty = self._r.speed_penalty_coef * (speed - self._r.speed_penalty_thresh)
-        if state.vel[2] > self._r.fall_vz_thresh:
-            c.fall_penalty = self._r.fall_penalty_coef * (float(state.vel[2]) - self._r.fall_vz_thresh)
+        if state.vel[2] < -self._r.fall_vz_thresh:
+            c.fall_penalty = self._r.fall_penalty_coef * (-float(state.vel[2]) - self._r.fall_vz_thresh)
 
         # --- Pillar clearance / collision course ---
         if obstacle_enabled:
@@ -284,7 +279,7 @@ class RewardManager:
         heading_align = float(np.dot(vel_xy / vel_xy_norm, goal_dir))
         return 0.10 * heading_align * min(vel_xy_norm, 2.0)
 
-    def _reward_yaw_align(self, state: StepState) -> float:
+    def _reward_yaw_align(self, state: StepState, progress: float = 0.0) -> float:
         # Source: old drone_env.py L5127-5270
 
         r = self._r
@@ -299,15 +294,15 @@ class RewardManager:
 
         total = reward_face
 
-        # Forward-goal bonus/penalty
+        # Forward-goal bonus/penalty (thresholds/coefs configurable in RewardConfig)
         if state.stage_index == 1 and state.num_pillars == 0:
-            good_thresh = 0.98
-            reward_coef = 0.40
-            penalty_coef = 2.5
+            good_thresh = r.stage1_yaw_good_thresh
+            reward_coef = r.stage1_yaw_forward_bonus_coef
+            penalty_coef = r.stage1_yaw_forward_penalty_coef
         else:
-            good_thresh = 0.9275
-            reward_coef = 0.2
-            penalty_coef = 1.2
+            good_thresh = r.stage2_yaw_good_thresh
+            reward_coef = r.stage2_yaw_forward_bonus_coef
+            penalty_coef = r.stage2_yaw_forward_penalty_coef
 
         if camera_fwd_dot >= good_thresh:
             total += reward_coef * (camera_fwd_dot - good_thresh) / max(1e-6, 1.0 - good_thresh)
@@ -342,6 +337,10 @@ class RewardManager:
                     * speed_to_goal
                     * abs(camera_fwd_dot)
                 )
+
+        # Progress amplification: bonus/penalty for moving while facing goal (stage0/1 only)
+        if state.num_pillars == 0 and progress > self._r.stage1_yaw_progress_gate:
+            total += self._r.stage1_yaw_progress_amp * progress * yaw_align_cos
 
         return total
 
@@ -496,6 +495,7 @@ class RewardManager:
         visibility = 0.0
         if (
             state.stage_index >= 2
+            and state.global_step < r.stage2_obstacle_visibility_end_step
             and r.stage2_obstacle_visible_depth_min <= state.front_depth <= r.stage2_obstacle_visible_depth_max
             and (state.nearest_pillar_dist or float("inf")) > r.stage2_obstacle_visibility_safe_pillar_dist
             and (state.prev_dist_xy - state.dist_xy) > r.stage2_obstacle_visibility_progress_gate
@@ -506,12 +506,16 @@ class RewardManager:
         # Obstacle slowdown
         slowdown = 0.0
         speed_drop = self._prev_horizontal_speed - state.horizontal_speed
+        _goal_vec = np.asarray(state.goal[:2], dtype=np.float32) - np.asarray(state.pos[:2], dtype=np.float32)
+        _goal_dir = _goal_vec / (float(np.linalg.norm(_goal_vec)) + 1e-8)
+        _speed_toward_goal = float(np.dot(np.asarray(state.vel[:2], dtype=np.float32), _goal_dir))
         if (
             state.front_depth < r.stage2_obstacle_slowdown_depth_thresh
             and (state.nearest_pillar_dist or float("inf")) < r.stage2_obstacle_slowdown_depth_thresh
             and speed_drop > r.stage2_obstacle_slowdown_speed_drop
             and (state.prev_dist_xy - state.dist_xy) > 0.0
             and state.horizontal_speed > 0.4
+            and _speed_toward_goal > r.stage2_obstacle_slowdown_min_goal_speed
         ):
             slowdown = r.stage2_obstacle_slowdown_reward
         out["slowdown"] = slowdown

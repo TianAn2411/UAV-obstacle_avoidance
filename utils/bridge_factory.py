@@ -357,10 +357,11 @@ class ROSBridge(Node):
             try:
                 self._publish_visual_odometry()
             except Exception as exc:
-                try:
-                    self.logger.warning(f"[VO THREAD] publish failed: {exc}")
-                except Exception:
-                    pass
+                if "publisher's context is invalid" not in str(exc):
+                    try:
+                        self.logger.warning(f"[VO THREAD] publish failed: {exc}")
+                    except Exception:
+                        pass
             next_t += period
             sleep_s = next_t - time.monotonic()
             if sleep_s > 0.0:
@@ -418,10 +419,11 @@ class ROSBridge(Node):
         self._spin_thread.start()
 
     def _spin_once(self):
-        try:
-            rclpy.spin_once(self, timeout_sec=0.0)
-        except Exception:
-            pass
+        with self._spin_lock:
+            try:
+                rclpy.spin_once(self, timeout_sec=0.0)
+            except Exception:
+                pass
 
     def _start_offboard_keepalive_thread(self):
         if self._keepalive_thread is not None:
@@ -479,30 +481,30 @@ class ROSBridge(Node):
                             vz = 0.0
                             yr = 0.0
 
-                            # Z safety: chỉ can thiệp khi altitude thấp nguy hiểm
-                            cur_z_ned = float(self.px4_lpos[2])
-                            cur_alt = -cur_z_ned if np.isfinite(cur_z_ned) else 0.0
+                            # # Z safety: chỉ can thiệp khi altitude thấp nguy hiểm
+                            # cur_z_ned = float(self.px4_lpos[2])
+                            # cur_alt = -cur_z_ned if np.isfinite(cur_z_ned) else 0.0
 
-                            target_alt = self.keepalive_target_alt
-                            deadband = self.keepalive_alt_deadband
-                            kp = self.keepalive_z_kp
-                            max_down = self.keepalive_max_descend_vz  # NED: dương là hạ xuống
-                            max_up = self.keepalive_max_ascend_vz     # NED: âm là bay lên
+                            # target_alt = self.keepalive_target_alt
+                            # deadband = self.keepalive_alt_deadband
+                            # kp = self.keepalive_z_kp
+                            # max_down = self.keepalive_max_descend_vz  # NED: dương là hạ xuống
+                            # max_up = self.keepalive_max_ascend_vz     # NED: âm là bay lên
 
-                            alt_err = cur_alt - target_alt
+                            # alt_err = cur_alt - target_alt
 
-                            if cur_alt < 1.2:
-                                # Quá thấp: ép leo nhẹ để không rơi.
-                                vz = -max_up
-                            elif alt_err > deadband:
-                                # Quá cao: hạ từ từ.
-                                vz = min(max_down, kp * alt_err)
-                            elif alt_err < -deadband:
-                                # Thấp hơn target: leo nhẹ.
-                                vz = -min(max_up, kp * (-alt_err))
-                            else:
-                                # Trong vùng hợp lý: hover.
-                                vz = 0.0
+                            # if cur_alt < 1.2:
+                            #     # Quá thấp: ép leo nhẹ để không rơi.
+                            #     vz = -max_up
+                            # elif alt_err > deadband:
+                            #     # Quá cao: hạ từ từ.
+                            #     vz = min(max_down, kp * alt_err)
+                            # elif alt_err < -deadband:
+                            #     # Thấp hơn target: leo nhẹ.
+                            #     vz = -min(max_up, kp * (-alt_err))
+                            # else:
+                            #     # Trong vùng hợp lý: hover.
+                            #     vz = 0.0
                             with self._last_setpoint_lock:
                                 now_recheck = self.get_clock().now().nanoseconds * 1e-9
                                 last_t_recheck = float(self._last_setpoint_time)
@@ -516,8 +518,7 @@ class ROSBridge(Node):
                             if now - self._last_keepalive_log_time >= 3.0:
                                 self.logger.warning(
                                     f"[KEEPALIVE STALE HOVER] model={self.model_name} "
-                                    f"age={age:.3f}s mode={mode} cur_alt={cur_alt:.2f}m "
-                                    f"target_alt={target_alt:.2f}m alt_err={alt_err:.2f} "
+                                    f"age={age:.3f}s mode={mode} "
                                     f"hover_cmd=({vx:.2f},{vy:.2f},{vz:.2f},{yr:.2f})"
                                 )
                                 self._last_keepalive_log_time = now
@@ -766,8 +767,7 @@ class ROSBridge(Node):
     def _depth_cb(self, msg):
         img = self.cv_bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
         img_float = img.astype(np.float32)
-        depth = np.nan_to_num(img_float, nan=10.0, posinf=10.0, neginf=10.0)
-        depth[depth <= 0.0] = 10.0
+        depth = np.nan_to_num(img_float, nan=0.0, posinf=10.0, neginf=0.0)
         depth = np.clip(depth, 0.0, 10.0)
         if depth.shape == (84, 84):
             self.depth_raw = depth.astype(np.float32, copy=False)
@@ -1575,6 +1575,13 @@ class ROSBridge(Node):
         ranges[bad] = 0.1
         self.lidar_raw = np.clip(ranges, 0.1, 30.0)
 
+    def get_quaternion(self) -> np.ndarray:
+        with self._gz_lock:
+            q = np.array(self.gz_quat, dtype=np.float32)  # [w, x, y, z] ENU/FLU
+        if q[0] < 0.0:
+            q = -q  # canonical form: qw >= 0 (q and -q represent same rotation)
+        return q
+
     def get_lidar_scan(self) -> np.ndarray:
         return self.lidar_raw.copy()  # (1080,) float32, range [0.1, 30.0] m
 
@@ -1800,7 +1807,7 @@ class ROSBridge(Node):
             for _ in range(10):
                 self.send_velocity(0.0, 0.0, 0.0, 0.0)
                 self._spin_once()
-            self.enable_offboard_keepalive(True)
+            self.enable_offboard_keepalive(False)
             return True
 
         self.logger.debug(
@@ -2384,6 +2391,22 @@ class Spawner:
             else None
         )
 
+
+    def _gz_spin_wrap(self, fn, *args, max_wait_s=3.0, **kwargs):
+        """Run fn in a thread with wall-clock timeout. Spawner has no ROS node so no spinning needed."""
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            future = ex.submit(fn, *args, **kwargs)
+            try:
+                return future.result(timeout=max_wait_s)
+            except concurrent.futures.TimeoutError:
+                self.logger.warning(
+                    f"[SPAWNER] _gz_spin_wrap timeout after {max_wait_s}s fn={fn.__name__}"
+                )
+                return None
+            except Exception as exc:
+                self.logger.warning(f"[SPAWNER] _gz_spin_wrap error fn={fn.__name__}: {exc}")
+                return None
 
     def _gz_env(self):
         env = os.environ.copy()

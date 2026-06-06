@@ -28,8 +28,8 @@ class RewardConfig:
     # r = coef * (prev_dist_xy - dist_xy)
     # Example: drone moves 0.1m closer → +8.0*0.1 = +0.8/step
     # Example: drone drifts 0.05m away  → -6.0*0.05 = -0.3/step
-    progress_pos_coef: float = 8.0
-    progress_neg_coef: float = 6.0
+    progress_pos_coef: float = 15.0
+    progress_neg_coef: float = 10.0
     stage2_progress_pos_coef: float = 2.2  # reduced in pillar stages (pillar detours expected)
 
     # ------------------------------------------------------------------ #
@@ -70,7 +70,7 @@ class RewardConfig:
     # Example stage1: flying at 1.5m/s toward goal → 0.50 * 1.5 = +0.75/step
     # Example stage1: drifting 0.5m/s away         → 1.0 * (-0.5) clamped = -0.5/step
     # Stage2: coef scales down near pillars to avoid rushing into obstacles.
-    stage1_velocity_goal_coef: float = 0.50
+    stage1_velocity_goal_coef: float = 1.750
     stage2_velocity_goal_coef_far: float = 0.175    # pillar dist > far_dist
     stage2_velocity_goal_coef_near: float = 0.12    # pillar dist > near_dist
     stage2_velocity_goal_coef_danger: float = 0.03  # pillar dist <= near_dist
@@ -88,15 +88,15 @@ class RewardConfig:
     # Example: +0.1m progress, cos=0.95 → 2.0*0.1*0.95 = +0.19 bonus
     # Example: +0.1m progress, cos=0.5  → 2.0*0.1*0.5  = +0.10 bonus (smaller)
     # Example: +0.1m progress, cos=-0.3 → 2.0*0.1*(-0.3) = -0.06 penalty
-    stage1_yaw_progress_amp: float = 2.0        # amplification coef for progress × cos term
+    stage1_yaw_progress_amp: float = 0.0 #1.15 old        # amplification coef for progress × cos term
     stage1_yaw_progress_gate: float = 0.0       # min progress (m) to trigger amplificationo
     # r = face_goal_coef * cos(yaw_error)  +  forward_bonus_or_penalty
     # Example stage1: perfectly aligned (yaw_error=0) → 0.20*1.0 + 0.40 = +0.60/step
     # Example stage1: 90° off (cos=0)                 → 0.20*0.0 - 1.23 = -1.23/step
     # backwards_yaw_penalty triggers when flying fast while facing away.
-    stage1_face_goal_coef: float = 0.20
-    stage1_backwards_yaw_penalty_coef: float = 0.20
-    stage1_backwards_yaw_speed_gate: float = 0.50   # min speed (m/s) to trigger
+    stage1_face_goal_coef: float = 0.00
+    stage1_backwards_yaw_penalty_coef: float = 0.00 #0.2
+    stage1_backwards_yaw_speed_gate: float = 0.00   # min speed (m/s) to trigger (0.5)
 
     # Forward-goal bonus/penalty — piecewise linear ramp around good_thresh
     # cos(yaw_error) >= good_thresh → bonus (drone facing goal)
@@ -110,9 +110,9 @@ class RewardConfig:
     #   cos=0.98 (11°)  →  0.00 (boundary)
     #   cos=0.00 (90°)  → -2.5 * 0.98/1.98 = -1.24 penalty
     #   cos=-1.0 (180°) → -3.5 penalty (max)
-    stage1_yaw_good_thresh: float = 0.92       # cos threshold ≈ 11.5° — above = bonus, below = penalty
-    stage1_yaw_forward_bonus_coef: float = 0.75   # max bonus at perfect alignment (cos=1.0)
-    stage1_yaw_forward_penalty_coef: float = 3.5  # max penalty at full misalignment (cos=-1.0)
+    stage1_yaw_good_thresh: float = 0.85       # cos threshold ≈ 36.8° — above = bonus, below = penalty
+    stage1_yaw_forward_bonus_coef: float = 0.00   # max bonus at perfect alignment (cos=1.0)
+    stage1_yaw_forward_penalty_coef: float = 0.00  # max penalty at full misalignment (cos=-1.0)
 
     # Stage2+ (with pillars): looser thresh=0.9275 ≈ yaw_error < 21.9° for bonus
     #   cos=1.00 (0°)   → +0.20 * 1.0 = +0.20 bonus
@@ -297,13 +297,13 @@ class RewardConfig:
     # near: drone within near_radius  → +2.5 once
     # reach: drone within reach_radius → +10.0 once
     # Example: goal at 12m, 3 waypoints → max +37.5 bonus per episode
-    stage1_subgoal_near_radius: float = 1.8
+    stage1_subgoal_near_radius: float = 1.5
     stage1_subgoal_reach_radius: float = 1.2
     stage1_subgoal_near_reward: float = 2.5
-    stage1_subgoal_reach_reward: float = 10.0
+    stage1_subgoal_reach_reward: float = 12.0
     stage1_subgoal_dist_min: float = 8.0   # only spawn subgoals when goal is far enough
     stage1_subgoal_dist_max: float = 25.0
-    stage1_subgoal_count: int = 4        # fixed number of waypoints along start→goal line
+    stage1_subgoal_count: int = 6        # fixed number of waypoints along start→goal line
 
     # ------------------------------------------------------------------ #
     # Collision course / body clearance — per step, stage2+               #

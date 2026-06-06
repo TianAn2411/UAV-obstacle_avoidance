@@ -461,6 +461,15 @@ def run_training(stage: int = 1) -> None:
             device="cuda",
         )
 
+    # --- CNN freeze (stage 0/1: no pillars, train state MLP only) ---
+    freeze_cnn = bool(conf.get("freeze_cnn", False))
+    extractor = model.policy.features_extractor
+    for name, param in extractor.named_parameters():
+        if name.startswith("cnn"):  # covers cnn.* and cnn_fc.*
+            param.requires_grad = not freeze_cnn
+    logger.info(f"[CNN] freeze_cnn={freeze_cnn} — "
+                + ("cnn+cnn_fc frozen" if freeze_cnn else "all params trainable"))
+
     # --- Callbacks ---
     ckpt_callback = CheckpointCallback(
         save_freq=max(check_freq // n_envs, 1),

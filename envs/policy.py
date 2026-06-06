@@ -10,9 +10,9 @@ class DepthStateExtractor(BaseFeaturesExtractor):
         n_state = observation_space["state"].shape[0]
         depth_channels = observation_space["depth"].shape[0]
         assert depth_channels == 3, f"DepthStateExtractor expects depth channels=3, got {depth_channels}"
-        assert n_state == 46, f"DepthStateExtractor expects state dim=46, got {n_state}"
+        assert n_state > 0, f"DepthStateExtractor expects state dim > 0, got {n_state}"
 
-        # Nhánh CNN: Xử lý ảnh độ sâu (Depth Map) - Thường là 84x84
+        # Nhánh CNN: 
         self.cnn = nn.Sequential(
             nn.Conv2d(3, 32, kernel_size=8, stride=4), nn.ReLU(),
             nn.Conv2d(32, 64, kernel_size=4, stride=2), nn.ReLU(),

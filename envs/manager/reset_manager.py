@@ -207,12 +207,14 @@ class ResetManager:
         self._lift_warmup_before_episode(duration=self.ecfg.lift_warmup_time)
         return True
 
+    _HARD_RESET_MAX_S = 90.0  # outer wall-clock deadline; prevents one env blocking SubprocVecEnv barrier
+
     def hard_reset_fallback_episode_reset(
         self, reason: str, reset_t0_mono: float, start: np.ndarray
     ) -> None:
         """
         Full hard reset: disarm → teleport → EKF → arm → lift.
-        6-attempt retry loop. Raises RuntimeError if all attempts fail.
+        6-attempt retry loop. Raises RuntimeError if all attempts fail or outer deadline exceeded.
         Source: old drone_env.py L3975-4265.
         """
         last_reason = None if reason == "startup" else reason
@@ -220,8 +222,16 @@ class ResetManager:
         reset_success = False
         arm_fail_count = 0
         max_attempts = 6
+        wall_deadline = time.monotonic() + self._HARD_RESET_MAX_S
 
         for attempt in range(1, max_attempts + 1):
+            if time.monotonic() > wall_deadline:
+                err_msg = (
+                    f"[ENV {self.env_id}] hard_reset deadline exceeded after {attempt - 1} attempts "
+                    f"({self._HARD_RESET_MAX_S:.0f}s) reason={reason}"
+                )
+                self.logger.error(err_msg)
+                raise RuntimeError(err_msg)
             self.logger.debug(f"[RESET] Full reset attempt {attempt}/{max_attempts}")
 
             if last_reason is None and attempt == 1:

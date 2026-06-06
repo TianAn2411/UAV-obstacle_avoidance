@@ -295,7 +295,7 @@ class RewardManager:
         total = reward_face
 
         # Forward-goal bonus/penalty (thresholds/coefs configurable in RewardConfig)
-        if state.stage_index == 1 and state.num_pillars == 0:
+        if state.stage_index <= 1 and state.num_pillars == 0:
             good_thresh = r.stage1_yaw_good_thresh
             reward_coef = r.stage1_yaw_forward_bonus_coef
             penalty_coef = r.stage1_yaw_forward_penalty_coef
@@ -307,7 +307,10 @@ class RewardManager:
         if camera_fwd_dot >= good_thresh:
             total += reward_coef * (camera_fwd_dot - good_thresh) / max(1e-6, 1.0 - good_thresh)
         else:
-            total += -penalty_coef * (good_thresh - camera_fwd_dot) / max(1e-6, good_thresh + 1.0)
+            if state.stage_index == 0:
+                total += 0.0
+            else:
+                total += -penalty_coef * (good_thresh - camera_fwd_dot) / max(1e-6, good_thresh + 1.0)
 
         # Stage1 backwards yaw penalty
         if state.num_pillars == 0:

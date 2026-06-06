@@ -139,7 +139,7 @@ class TrainManager:
                 self._reset_manager.hard_reset_fallback_episode_reset(reason, reset_t0, self._start)
                 new_pos = self.bridge.get_gazebo_position()
                 self._start = np.array([new_pos[0], new_pos[1], 0.0], dtype=np.float32)
-                
+
             self._goal = self._generate_new_goal(override_start=self._start)
             self._reset_manager.pre_episode_auto_yaw_to_goal(self._goal)
             self._pillar_manager.reset_episode(self._start, self._goal)
@@ -185,7 +185,7 @@ class TrainManager:
         self._reset_depth_history()
 
         obs = self._build_obs(
-            self.bridge.get_depth_84(),
+            self._normalize_depth_frame(self.bridge.get_depth_84()),
             self.bridge.get_ekf_position_enu(),
             self.bridge.get_linear_velocity(),
             self.bridge.get_yaw()[0],
@@ -232,7 +232,7 @@ class TrainManager:
                 f"(step={self._step_count}) — terminating episode"
             )
             obs = self._build_obs(
-                self.bridge.get_depth_84(),
+                self._normalize_depth_frame(self.bridge.get_depth_84()),
                 self.bridge.get_ekf_position_enu(),
                 self.bridge.get_linear_velocity(),
                 self.bridge.get_yaw()[0],
@@ -317,8 +317,7 @@ class TrainManager:
         dist_xy = float(np.linalg.norm(rel_goal_xy))
         horizontal_speed = float(np.linalg.norm(vel_xy))
 
-        goal_dir_norm = float(np.linalg.norm(rel_goal_xy))
-        if goal_dir_norm > 1e-6:
+        if dist_xy > 1e-6:
             desired_yaw = math.atan2(float(rel_goal_xy[1]), float(rel_goal_xy[0]))
         else:
             desired_yaw = float(yaw)
@@ -392,8 +391,8 @@ class TrainManager:
                 pos=pos,
             )
 
-        # 7. Build obs
-        obs = self._build_obs(depth_raw, ekf_pos, vel, float(yaw), ang_vel)
+        # 7. Build obs (depth_frame already normalized at line 309)
+        obs = self._build_obs(depth_frame, ekf_pos, vel, float(yaw), ang_vel)
 
         # Update carry state
         self._prev_pos = pos.copy()
@@ -472,12 +471,13 @@ class TrainManager:
                     return np.array([gx, gy, gz], dtype=np.float32)
         else:
             min_goal_dist = goal_dist_low
+            max_goal_dist = e.goal_xy_norm  # 20m — matches observation normalizer
             for _ in range(50):
                 gx = float(self._np_random.uniform(goal_bounds[0], goal_bounds[1]))
                 gy = float(self._np_random.uniform(goal_bounds[2], goal_bounds[3]))
                 gz = float(self._np_random.uniform(e.goal_z_min, e.goal_z_max - 1.0))
                 dist = float(np.linalg.norm(np.array([gx, gy], dtype=np.float32) - base_pos[:2]))
-                if dist > min_goal_dist:
+                if min_goal_dist <= dist <= max_goal_dist:
                     return np.array([gx, gy, gz], dtype=np.float32)
 
         # Fallback to corner farthest from base
@@ -506,21 +506,20 @@ class TrainManager:
     # Observation / depth processing                                      #
     # ------------------------------------------------------------------ #
 
-    def _build_obs(self, depth: np.ndarray, ekf_pos: np.ndarray, vel: np.ndarray, yaw: float, ang_vel: np.ndarray) -> dict:
-        """Push depth frame to rolling stack and build 46-dim state vector."""
-        depth_frame = self._normalize_depth_frame(depth)
-
+    def _build_obs(self, depth_frame: np.ndarray, ekf_pos: np.ndarray, vel: np.ndarray, yaw: float, ang_vel: np.ndarray) -> dict:
+        """Push depth frame (meters) to rolling stack and build 18-dim state vector."""
         if not self._depth_history or len(self._depth_history) == 0:
             self._reset_depth_history()
         self._depth_history.append(depth_frame.copy())
         depth_stack = np.stack(list(self._depth_history), axis=0).astype(np.float32)
+        depth_stack = depth_stack / self.ecfg.depth_max  # meters → [0, 1] for CNN
 
         state_vec = self._build_state_vector(ekf_pos, vel, yaw, ang_vel)
 
         if not np.all(np.isfinite(state_vec)):
             state_vec = np.nan_to_num(state_vec, nan=0.0, posinf=0.0, neginf=0.0)
         if not np.all(np.isfinite(depth_stack)):
-            depth_stack = np.nan_to_num(depth_stack, nan=10.0, posinf=10.0, neginf=10.0)
+            depth_stack = np.nan_to_num(depth_stack, nan=0.0, posinf=1.0, neginf=0.0)
 
         return {"depth": depth_stack, "state": state_vec}
 
@@ -532,13 +531,14 @@ class TrainManager:
         ang_vel: np.ndarray,
     ) -> np.ndarray:
         """
-        46-dim ego-centric state vector (all from EKF/IMU, no GT leaks).
+        18-dim ego-centric state vector (all from EKF/IMU, no GT leaks).
         Layout:
-          [0:3]   linear vel  [vx, vy, vz]  ENU  (+noise)
-          [3:6]   angular vel [rx, py, yaw_r]  FRD  (+noise)
+          [0:3]   linear vel  [vx, vy, vz]  FLU  (+noise)
+          [3:6]   angular vel [rx, py, yaw_r]  FLU  (+noise)
           [6]     altitude z  ENU            (+noise)
           [7:10]  goal in body-FLU [body_x, body_y, body_z]  (using noisy EKF pos+yaw)
-          [10:46] LiDAR sector min-ranges (36 sectors, 7.5 deg each)
+          [10:14] quaternion [qw, qx, qy, qz] ENU/FLU (unit, already in [-1,1])
+          [14:18] last action [vx, vy, vz, yaw_rate] (in [-1,1])
         """
         ekf_pos = np.asarray(ekf_pos, dtype=np.float32)
         vel     = np.asarray(vel,     dtype=np.float32)
@@ -561,18 +561,49 @@ class TrainManager:
         body_y = float(-sy * rel_goal[0] + cy * rel_goal[1])
         body_z = float(rel_goal[2])
 
-        # LiDAR: 36 sector min-ranges
-        lidar_features = self._compute_lidar_sector_features(self.bridge.get_lidar_scan())
+        # ENU velocity → FLU body frame
+        vel_flu = np.array([
+            float( cy * vel[0] + sy * vel[1]),
+            float(-sy * vel[0] + cy * vel[1]),
+            float(vel[2])
+        ], dtype=np.float32)
+
+        # FRD angular velocity → FLU (flip y and z)
+        ang_vel_flu = np.array([
+            float(ang_vel[0]),
+            -float(ang_vel[1]),
+            -float(ang_vel[2])
+        ], dtype=np.float32)
+
+        # Normalize to roughly [-1, 1] using known physical bounds
+        vel_flu_n = vel_flu / np.array([self.ecfg.vx_limit, self.ecfg.vy_limit, self.ecfg.vz_up_limit], dtype=np.float32)
+        ang_vel_flu_n = ang_vel_flu / np.array([math.pi, math.pi, self.ecfg.yaw_rate_limit], dtype=np.float32)
+        alt_n = float(ekf_pos[2]) / self.ecfg.fence_z_max
+        goal_n = np.array([
+            body_x / self.ecfg.goal_xy_norm,
+            body_y / self.ecfg.goal_xy_norm,
+            body_z / self.ecfg.goal_z_norm,
+        ], dtype=np.float32)
+
+        # Quaternion [qw, qx, qy, qz] — unit vector, values already in [-1, 1]
+        quat = self.bridge.get_quaternion()
+        if self.ecfg.obs_noise_quat_std > 0.0:
+            quat = quat + self._np_random.standard_normal(4).astype(np.float32) * self.ecfg.obs_noise_quat_std
+            quat /= np.linalg.norm(quat)
+
+        # Last action — raw policy output, already in [-1, 1]
+        last_action = self._prev_action.copy()
 
         state = np.concatenate([
-            vel,
-            ang_vel,
-            np.array([float(ekf_pos[2])], dtype=np.float32),
-            np.array([body_x, body_y, body_z], dtype=np.float32),
-            lidar_features,
+            vel_flu_n,
+            ang_vel_flu_n,
+            np.array([alt_n], dtype=np.float32),
+            goal_n,
+            quat,
+            last_action,
         ]).astype(np.float32)
 
-        assert state.shape == (46,), f"state.shape expected (46,), got {state.shape}"
+        assert state.shape == (18,), f"state.shape expected (18,), got {state.shape}"
         return state
 
     def _normalize_depth_frame(self, depth: np.ndarray) -> np.ndarray:
@@ -588,10 +619,10 @@ class TrainManager:
                 raise ValueError(f"ndim={arr.ndim}")
             if arr.shape != (84, 84):
                 raise ValueError(f"shape={arr.shape}")
-            arr = np.nan_to_num(arr, nan=10.0, posinf=10.0, neginf=10.0)
-            return np.clip(arr, 0.0, 10.0).astype(np.float32)
+            arr = np.nan_to_num(arr, nan=0.0, posinf=10.0, neginf=0.0)
+            return np.clip(arr, 0.0, self.ecfg.depth_max).astype(np.float32)  # meters [0, depth_max]
         except Exception:
-            return np.full((84, 84), 10.0, dtype=np.float32)
+            return np.full((84, 84), 0.0, dtype=np.float32)
 
     def _compute_depth_sector_features(self, depth_frame: np.ndarray) -> np.ndarray:
         """
@@ -599,7 +630,7 @@ class TrainManager:
         Source: old drone_env.py L7519.
         """
         d = np.asarray(depth_frame, dtype=np.float32)
-        d = np.nan_to_num(d, nan=10.0, posinf=10.0, neginf=10.0)
+        d = np.nan_to_num(d, nan=0.0, posinf=10.0, neginf=0.0)
         _, w = d.shape
         s0 = d[:, 0:(w // 3)]
         s1 = d[:, (w // 3):(2 * w // 3)]

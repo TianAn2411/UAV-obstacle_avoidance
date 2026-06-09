@@ -30,7 +30,7 @@ curriculum:
   - stage: 0
     num_pillars: 0
     min_steps: 500_000
-    freeze_vz: true              # horizontal nav only — vz locked to 0
+    freeze_vz: false              # horizontal nav only — vz locked to 0
     freeze_cnn: true             # no pillars — CNN branch frozen, train state MLP only
     obs_noise_vel_std: 0.0
     obs_noise_ang_vel_std: 0.0

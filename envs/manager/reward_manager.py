@@ -232,11 +232,23 @@ class RewardManager:
 
     def _reward_altitude(self, state: StepState) -> tuple[float, float]:
         z = float(state.pos[2])
+
+        # Gaussian reward for optimal altitude
+        optimal_reward = 0.0
+        if self._r.alt_optimal_coef != 0.0:
+            alt_error = z - self._r.alt_optimal_target
+            optimal_reward = self._r.alt_optimal_coef * np.exp(
+                -(alt_error ** 2) / (2.0 * self._r.alt_optimal_sigma ** 2)
+            )
+
+        # Linear penalty outside safe bounds
+        penalty = 0.0
         if z < self._e.alt_min:
-            return 0.0, self._r.alt_below_min_coef * (self._e.alt_min - z)
-        if z > self._e.alt_max:
-            return 0.0, self._r.alt_above_max_coef * (z - self._e.alt_max)
-        return 0.0, 0.0
+            penalty = self._r.alt_below_min_coef * (self._e.alt_min - z)
+        elif z > self._e.alt_max:
+            penalty = self._r.alt_above_max_coef * (z - self._e.alt_max)
+
+        return optimal_reward, penalty
 
     def _reward_smooth(self, action: np.ndarray, prev_action: np.ndarray) -> float:
         # Source: old drone_env.py L5066

@@ -956,9 +956,9 @@ class ResetManager:
         if not getattr(self.bridge, "offboard_enabled", False):
             self.logger.debug("[RESCUE] skip: offboard is not enabled")
             return False
-        if getattr(self.bridge, "failsafe", False):
-            self.logger.warning("[RESCUE] skip: PX4 in failsafe — velocity commands ignored")
-            return False
+        # if getattr(self.bridge, "failsafe", False):
+        #     self.logger.warning("[RESCUE] skip: PX4 in failsafe — velocity commands ignored")
+        #     return False
 
         pos0 = self.bridge.get_gazebo_position()
         if not np.all(np.isfinite(pos0)):
@@ -1032,11 +1032,11 @@ class ResetManager:
         """Source: old drone_env.py L3684."""
         if reason == "startup":
             return "startup_arm"
-        if reason in {"goal_xy", "max_steps", "collision", "goal_xy_wrong_altitude", "goal_xy_near_boundary"}:
+        if reason in {"goal_xy", "max_steps", "collision", "goal_xy_wrong_altitude", "goal_xy_near_boundary",  "px4_failsafe"}:
             return "continuous"
         if reason in {"out_of_fence", "max_steps_near_fence_recentered"}:
             return "rescue_then_continuous"
-        if reason in {"px4_failsafe", "ekf_callbacks_dead"}:
+        if reason in {"ekf_callbacks_dead"}:
             return "hard_reset_fallback"
         return "hard_reset_fallback"
 

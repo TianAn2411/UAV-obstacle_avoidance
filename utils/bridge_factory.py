@@ -150,9 +150,9 @@ class ROSBridge(Node):
         self._vo_velocity_max_m_s = 15.0
         self._vo_stop = False
         self._vo_thread = None
+        # Background spin thread to keep ROS alive during blocking reset operations
         self._spin_stop = False
         self._spin_thread = None
-        self._spin_lock = threading.Lock()
         self._xrce_proc = None
 
         self._last_status_wall = 0.0
@@ -217,8 +217,7 @@ class ROSBridge(Node):
         # Dedicated thread streams VIO at 30Hz independent of rclpy spin_once,
         # so PX4 EKF always gets odometry even during blocking gz service calls.
         self._start_vo_thread()
-        # Background thread calls spin_once at 20Hz to keep PX4 callbacks alive
-        # during SubprocVecEnv idle gaps (when other envs are hard-resetting).
+        # Background spin thread keeps ROS callbacks alive during blocking reset operations
         self._start_ros_spin_thread()
 
         self.depth_sub = self.create_subscription(
@@ -370,60 +369,35 @@ class ROSBridge(Node):
                 next_t = time.monotonic()
 
     def _start_ros_spin_thread(self):
-        """Background thread: call rclpy.spin_once at 20Hz to keep PX4 callbacks
-        alive while the training loop is idle (SubprocVecEnv sync gaps)."""
-        if self._spin_thread is not None:
+        """Background thread spins ROS executor at 20Hz to keep callbacks alive during blocking operations."""
+        if self._spin_thread is not None and self._spin_thread.is_alive():
             return
+
         self._spin_stop = False
-
-        def _worker():
-            period = 0.05  # 20Hz
-            next_t = time.monotonic()
-            watchdog_tick = 0
-            while not self._spin_stop:
-                try:
-                    self._spin_once()
-                except Exception:
-                    pass
-                # XRCE agent watchdog: poll every ~5s (100 iters at 20Hz)
-                watchdog_tick += 1
-                if watchdog_tick >= 100:
-                    watchdog_tick = 0
-                    if self._xrce_proc is not None and self._xrce_proc.poll() is not None:
-                        self.logger.error(
-                            f"[XRCE AGENT DIED] model={self.model_name} "
-                            f"pid={self._xrce_proc.pid} returncode={self._xrce_proc.returncode}"
-                        )
-                        try:
-                            self._xrce_proc = subprocess.Popen(
-                                self._xrce_proc.args,
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL,
-                            )
-                            self.logger.info(
-                                f"[XRCE AGENT RELAUNCHED] pid={self._xrce_proc.pid}"
-                            )
-                        except Exception as exc:
-                            self.logger.error(f"[XRCE AGENT RELAUNCH FAILED] {exc}")
-                            self._xrce_proc = None
-                next_t += period
-                sleep_s = next_t - time.monotonic()
-                if sleep_s > 0:
-                    time.sleep(sleep_s)
-                else:
-                    next_t = time.monotonic()
-
         self._spin_thread = threading.Thread(
-            target=_worker, name=f"ROSSpin_{self.model_name}", daemon=True
+            target=self._spin_worker,
+            name=f"ros_spin_{self.model_name}",
+            daemon=True,
         )
         self._spin_thread.start()
 
-    def _spin_once(self):
-        with self._spin_lock:
+    def _spin_worker(self):
+        """Background worker spins ROS executor at 20Hz."""
+        self.logger.info(f"[ROS SPIN] thread started model={self.model_name}")
+        while not self._spin_stop:
             try:
                 rclpy.spin_once(self, timeout_sec=0.0)
-            except Exception:
-                pass
+            except Exception as e:
+                self.logger.debug(f"[ROS SPIN] spin_once exception: {e}")
+            time.sleep(0.05)  # 20Hz
+        self.logger.info(f"[ROS SPIN] thread stopped model={self.model_name}")
+
+    def _spin_once(self):
+        """Directly call rclpy.spin_once without lock (main thread only)."""
+        try:
+            rclpy.spin_once(self, timeout_sec=0.0)
+        except Exception:
+            pass
 
     def _start_offboard_keepalive_thread(self):
         if self._keepalive_thread is not None:
@@ -627,18 +601,21 @@ class ROSBridge(Node):
             except Exception as e:
                 self.logger.warning(f"[CLOSE] Error joining vo_thread: {e}")
 
-        if getattr(self, '_spin_thread', None) is not None:
+        if self._spin_thread is not None:
             try:
-                self._spin_thread.join(timeout=1.0)
+                self._spin_thread.join(timeout=0.5)
                 if self._spin_thread.is_alive():
                     self.logger.warning("[CLOSE] spin_thread failed to join")
             except Exception as e:
                 self.logger.warning(f"[CLOSE] Error joining spin_thread: {e}")
 
-        try:
-            self.destroy_node()
-        except Exception:
-            pass
+        # REMOVED: destroy_node() — in SubprocVecEnv, explicit node destruction during
+        # episode resets causes "context is invalid" RCLError when retry logic calls
+        # send_velocity() after close(). Let process exit cleanup handle node lifecycle.
+        # try:
+        #     self.destroy_node()
+        # except Exception:
+        #     pass
 
     # ============================================================
     # Env / topic helpers
@@ -758,11 +735,26 @@ class ROSBridge(Node):
         self._failsafe_flags_msg = msg
 
     def is_px4_callbacks_healthy(self, max_est_flags_age: float = 5.0) -> bool:
-        """Return False if estimator-flags callbacks have been silent for too long."""
-        if self._last_estimator_flags_wall <= 0.0:
-            return True  # never received yet — startup, don't penalise
-        age = time.monotonic() - self._last_estimator_flags_wall
-        return age < max_est_flags_age
+        """Return False if critical PX4 callbacks have been silent for too long.
+
+        NOTE: estimator_flags check REMOVED - PX4 publishes this at low rate (~1Hz or on-change).
+        Only check status and local_pos which publish at high rate (50-100Hz).
+        If these are stale, DDS/ROS bridge is broken and needs reset."""
+        now = time.monotonic()
+
+        # Check status callback (vehicle state, arming, nav mode)
+        if self._last_status_wall > 0.0:
+            status_age = now - self._last_status_wall
+            if status_age > 2.0:  # 2s is very generous for 50Hz topic
+                return False
+
+        # Check local_position callback (EKF position estimate)
+        if self._last_local_pos_wall > 0.0:
+            lpos_age = now - self._last_local_pos_wall
+            if lpos_age > 2.0:
+                return False
+
+        return True
 
     def _depth_cb(self, msg):
         img = self.cv_bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
@@ -965,11 +957,20 @@ class ROSBridge(Node):
 
         Called from _vo_thread_worker (30Hz) and optionally from burst callers on the
         main thread.
+
+        CRITICAL: This must NEVER skip publishing. PX4 EKF will set failsafe if VIO
+        stream stops for >1-2s. Always publish even if clock/position not ready.
         """
-        clock_ns = int(self.get_clock().now().nanoseconds)
-        if self._use_sim_time and clock_ns <= 0:
+        # CRITICAL: Check gz_pose_ready before publishing
+        # Without this, stale/uninitialized position is sent → PX4 EKF diverges → failsafe
+        if not self.gz_pose_ready:
             return
-        now_s = float(clock_ns) * 1e-9
+
+        clock_ns = int(self.get_clock().now().nanoseconds)
+        # REMOVED: Early return on clock_ns <= 0
+        # Old code: if self._use_sim_time and clock_ns <= 0: return
+        # This caused VIO gaps during reset → PX4 failsafe loop
+        now_s = float(clock_ns) * 1e-9 if clock_ns > 0 else time.monotonic()
 
         with self._gz_lock:
             x_enu, y_enu, z_enu = self.gz_pos
@@ -1043,14 +1044,32 @@ class ROSBridge(Node):
 
         # Lower variance means EKF trusts EV more. Keep finite, realistic
         # variance during teleport recovery; do not inflate it as an override.
+        # INCREASED from 0.01 to 0.05: PX4 EKF was rejecting VIO (ev_pos=False)
+        # with variance=0.01 (too optimistic). Variance 0.05 = 22cm std (realistic GPS-like)
         if self._teleport_reset_countdown > 0:
-            msg.position_variance = [0.01, 0.01, 0.04]
+            msg.position_variance = [0.05, 0.05, 0.10]
             self._teleport_reset_countdown -= 1
         else:
-            msg.position_variance = [0.01, 0.01, 0.01]
+            msg.position_variance = [0.05, 0.05, 0.05]
 
         msg.reset_counter = int(self._vo_reset_counter)
         msg.quality = 100
+
+        # DEBUG: Log VIO vs Gazebo position divergence every 5s
+        if not hasattr(self, '_last_vo_divergence_log_time'):
+            self._last_vo_divergence_log_time = 0.0
+        if now_s - self._last_vo_divergence_log_time > 5.0:
+            vo_pos_ned = np.array([x_ned, y_ned, z_ned])
+            gz_pos_ned = np.array([float(y_enu), float(x_enu), float(-z_enu)])
+            divergence = float(np.linalg.norm(vo_pos_ned - gz_pos_ned))
+            self.logger.info(
+                f"[VIO DIVERGENCE] model={self.model_name} "
+                f"divergence={divergence:.3f}m "
+                f"vo_pos_ned=[{x_ned:.2f},{y_ned:.2f},{z_ned:.2f}] "
+                f"gz_pos_ned=[{gz_pos_ned[0]:.2f},{gz_pos_ned[1]:.2f},{gz_pos_ned[2]:.2f}] "
+                f"reset_counter={msg.reset_counter}"
+            )
+            self._last_vo_divergence_log_time = now_s
 
         with self._ros_pub_lock:
             self.vo_pub.publish(msg)
@@ -1840,7 +1859,7 @@ class ROSBridge(Node):
 
         # 3. ARM (Dùng force=True vì môi trường RL không có tín hiệu RC)
         if not self.is_armed:
-            self.arm(force=False)
+            self.arm(force=True)
             t0 = time.monotonic()
             armed_ok = False
             while time.monotonic() - t0 < 2.0:

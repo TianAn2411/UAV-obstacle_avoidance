@@ -48,12 +48,21 @@ class RewardConfig:
     # ------------------------------------------------------------------ #
     # Altitude penalty — per step, linear outside safe band               #
     # ------------------------------------------------------------------ #
-    # r = coef * (alt_min - alt)  if alt < alt_min  (too low)
-    # r = coef * (alt - alt_max)  if alt > alt_max  (too high)
-    # alt_min / alt_max come from EnvConfig.
+
+    # alt_# r = coef * (alt_min - alt)  if alt < alt_min  (too low)
+    # r = coef * (alt - alt_max)  if alt > alt_max  (too high)min / alt_max come from EnvConfig.
     # Example: drone at 1.0m, alt_min=2.0 → -2.5 * 1.0 = -2.5/step
     alt_below_min_coef: float = -2.5
     alt_above_max_coef: float = -1.5
+
+    # Gaussian reward for staying near optimal altitude
+    # r = alt_optimal_coef * exp(-(z - alt_optimal_target)^2 / (2 * alt_optimal_sigma^2))
+    # Peaks at alt_optimal_target, decays with distance
+    # Example: z=4.0m, target=4.0, sigma=0.5, coef=0.5 → +0.5/step
+    # Example: z=5.0m, target=4.0, sigma=0.5, coef=0.5 → +0.135/step
+    alt_optimal_coef: float = 0.2  # 0.0 = disabled, try 0.5-1.0 to enable
+    alt_optimal_target: float = 4.0  # optimal altitude (m)
+    alt_optimal_sigma: float = 0.5  # gaussian width (m) — smaller = sharper peak
 
     # ------------------------------------------------------------------ #
     # Action smoothness — per step                                        #

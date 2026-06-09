@@ -36,7 +36,7 @@ class EnvConfig:
     # Goal sampling ramp (annulus inner/outer edge over training steps)
     goal_dist_low_start: float = 8.0
     goal_dist_low_end: float = 16.0
-    goal_dist_high_start: float = 9.0
+    goal_dist_high_start: float = 12.0
     goal_dist_high_end: float = 16.0
     goal_dist_ramp_steps: int = 350_000
     goal_dist_ramp_min_band: float = 2.0   # minimum annulus width during ramp phase

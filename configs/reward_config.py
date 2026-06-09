@@ -55,6 +55,7 @@ class RewardConfig:
     alt_below_min_coef: float = -2.5
     alt_above_max_coef: float = -1.5
 
+
     # Gaussian reward for staying near optimal altitude
     # r = alt_optimal_coef * exp(-(z - alt_optimal_target)^2 / (2 * alt_optimal_sigma^2))
     # Peaks at alt_optimal_target, decays with distance
@@ -63,6 +64,12 @@ class RewardConfig:
     alt_optimal_coef: float = 0.2  # 0.0 = disabled, try 0.5-1.0 to enable
     alt_optimal_target: float = 4.0  # optimal altitude (m)
     alt_optimal_sigma: float = 0.5  # gaussian width (m) — smaller = sharper peak
+
+    # Suboptimal altitude penalty — lighter than below_min
+    # Penalizes alt_min to alt_suboptimal_low_thresh (e.g., 2.0-2.5m: allowed but inefficient)
+    # Example: z=2.2m → -0.4 * (2.5-2.2) = -0.12/step (light nudge)
+    alt_suboptimal_low_thresh: float = 2.5  # below this = suboptimal (but above alt_min)
+    alt_suboptimal_low_coef: float = -0.4   # light penalty, not as harsh as alt_below_min_coef
 
     # ------------------------------------------------------------------ #
     # Action smoothness — per step                                        #

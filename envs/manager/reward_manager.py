@@ -241,10 +241,13 @@ class RewardManager:
                 -(alt_error ** 2) / (2.0 * self._r.alt_optimal_sigma ** 2)
             )
 
-        # Linear penalty outside safe bounds
+        # Linear penalty outside safe bounds + suboptimal low zone
         penalty = 0.0
         if z < self._e.alt_min:
             penalty = self._r.alt_below_min_coef * (self._e.alt_min - z)
+        elif z < self._r.alt_suboptimal_low_thresh:
+            # In allowed range but suboptimal low (e.g., 2.0-2.5m)
+            penalty = self._r.alt_suboptimal_low_coef * (self._r.alt_suboptimal_low_thresh - z)
         elif z > self._e.alt_max:
             penalty = self._r.alt_above_max_coef * (z - self._e.alt_max)
 

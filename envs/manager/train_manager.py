@@ -731,10 +731,11 @@ class TrainManager:
     def _out_of_fence(self, pos: np.ndarray) -> bool:
         """Source: old drone_env.py L7874."""
         e = self.ecfg
-        x, y = float(pos[0]), float(pos[1])
+        x, y, z = float(pos[0]), float(pos[1]), float(pos[2])
         return (
             x < e.fence_x_min or x > e.fence_x_max
             or y < e.fence_y_min or y > e.fence_y_max
+            or z > e.fence_z_max
         )
 
     def _px4_estimator_insane(self) -> bool:

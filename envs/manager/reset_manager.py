@@ -1032,7 +1032,7 @@ class ResetManager:
         """Source: old drone_env.py L3684."""
         if reason == "startup":
             return "startup_arm"
-        if reason in {"goal_xy", "max_steps", "collision", "goal_xy_wrong_altitude", "goal_xy_near_boundary",  "px4_failsafe"}:
+        if reason in {"goal_xy", "max_steps", "collision", "flipped", "fell_to_ground", "goal_xy_wrong_altitude", "goal_xy_near_boundary",  "px4_failsafe"}:
             return "continuous"
         if reason in {"out_of_fence", "max_steps_near_fence_recentered"}:
             return "rescue_then_continuous"

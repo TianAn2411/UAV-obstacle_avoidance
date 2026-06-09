@@ -214,11 +214,7 @@ class ROSBridge(Node):
             self.qos,
         )
 
-        # Dedicated thread streams VIO at 30Hz independent of rclpy spin_once,
-        # so PX4 EKF always gets odometry even during blocking gz service calls.
-        self._start_vo_thread()
-        # Background spin thread keeps ROS callbacks alive during blocking reset operations
-        self._start_ros_spin_thread()
+        # Threads started after locks initialized (see end of __init__)
 
         self.depth_sub = self.create_subscription(
             Image,
@@ -322,6 +318,13 @@ class ROSBridge(Node):
 
         self._keepalive_thread = None
         self._keepalive_stop = False
+
+        # Start threads AFTER all locks/state initialized
+        # Dedicated thread streams VIO at 30Hz independent of rclpy spin_once,
+        # so PX4 EKF always gets odometry even during blocking gz service calls.
+        self._start_vo_thread()
+        # Background spin thread keeps ROS callbacks alive during blocking reset operations
+        self._start_ros_spin_thread()
         self._start_offboard_keepalive_thread()
         self._start_gz_pose_listener()
 

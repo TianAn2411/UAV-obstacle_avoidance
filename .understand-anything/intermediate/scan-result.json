@@ -1,19 +1,17 @@
 {
   "name": "obstacle_avoidance",
-  "description": "Reinforcement learning training system for drone obstacle avoidance using PPO with PX4 SITL simulation, featuring a curriculum of staged training environments with increasing pillar counts and a CNN+MLP policy operating on depth-camera observations and state vectors.",
+  "description": "Reinforcement learning pipeline for training a quadrotor to navigate through pillar obstacles using depth vision. Runs on PX4 SITL + Gazebo with ROS2 bridging, designed for sim-to-real transfer.",
   "languages": [
+    "json",
+    "markdown",
     "python",
+    "shell",
+    "txt",
     "unknown",
     "yaml"
   ],
   "frameworks": [
-    "gymnasium",
-    "PyTorch",
-    "stable-baselines3",
-    "ROS 2",
-    "Gazebo",
-    "PX4 SITL",
-    "OpenCV"
+    "Docker"
   ],
   "files": [
     {
@@ -25,8 +23,32 @@
     {
       "path": ".understand-anything/.understandignore",
       "language": "unknown",
-      "sizeLines": 19,
+      "sizeLines": 21,
       "fileCategory": "code"
+    },
+    {
+      "path": ".understand-anything/fingerprints.json",
+      "language": "json",
+      "sizeLines": 2403,
+      "fileCategory": "config"
+    },
+    {
+      "path": ".understand-anything/intermediate/scan-result.json",
+      "language": "json",
+      "sizeLines": 230,
+      "fileCategory": "config"
+    },
+    {
+      "path": ".understand-anything/knowledge-graph.json",
+      "language": "json",
+      "sizeLines": 2031,
+      "fileCategory": "config"
+    },
+    {
+      "path": ".understand-anything/meta.json",
+      "language": "json",
+      "sizeLines": 5,
+      "fileCategory": "config"
     },
     {
       "path": "configs/__init__.py",
@@ -37,7 +59,7 @@
     {
       "path": "configs/env_config.py",
       "language": "python",
-      "sizeLines": 132,
+      "sizeLines": 145,
       "fileCategory": "code"
     },
     {
@@ -49,13 +71,13 @@
     {
       "path": "configs/ppo_config.yaml",
       "language": "yaml",
-      "sizeLines": 28,
+      "sizeLines": 78,
       "fileCategory": "config"
     },
     {
       "path": "configs/reward_config.py",
       "language": "python",
-      "sizeLines": 197,
+      "sizeLines": 360,
       "fileCategory": "code"
     },
     {
@@ -79,37 +101,37 @@
     {
       "path": "envs/manager/action_manager.py",
       "language": "python",
-      "sizeLines": 88,
+      "sizeLines": 100,
       "fileCategory": "code"
     },
     {
       "path": "envs/manager/logging_manager.py",
       "language": "python",
-      "sizeLines": 591,
+      "sizeLines": 602,
       "fileCategory": "code"
     },
     {
       "path": "envs/manager/pillar_manager.py",
       "language": "python",
-      "sizeLines": 1105,
+      "sizeLines": 1172,
       "fileCategory": "code"
     },
     {
       "path": "envs/manager/reset_manager.py",
       "language": "python",
-      "sizeLines": 1039,
+      "sizeLines": 1089,
       "fileCategory": "code"
     },
     {
       "path": "envs/manager/reward_manager.py",
       "language": "python",
-      "sizeLines": 587,
+      "sizeLines": 590,
       "fileCategory": "code"
     },
     {
       "path": "envs/manager/train_manager.py",
       "language": "python",
-      "sizeLines": 686,
+      "sizeLines": 762,
       "fileCategory": "code"
     },
     {
@@ -121,8 +143,26 @@
     {
       "path": "envs/policy.py",
       "language": "python",
-      "sizeLines": 45,
+      "sizeLines": 41,
       "fileCategory": "code"
+    },
+    {
+      "path": "README.md",
+      "language": "markdown",
+      "sizeLines": 297,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "requirements.txt",
+      "language": "txt",
+      "sizeLines": 13,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "run_train.sh",
+      "language": "shell",
+      "sizeLines": 122,
+      "fileCategory": "script"
     },
     {
       "path": "safety/__init__.py",
@@ -137,9 +177,15 @@
       "fileCategory": "code"
     },
     {
+      "path": "test_lidar_alignment.py",
+      "language": "python",
+      "sizeLines": 173,
+      "fileCategory": "code"
+    },
+    {
       "path": "train.py",
       "language": "python",
-      "sizeLines": 516,
+      "sizeLines": 536,
       "fileCategory": "code"
     },
     {
@@ -151,7 +197,7 @@
     {
       "path": "utils/bridge_factory.py",
       "language": "python",
-      "sizeLines": 2544,
+      "sizeLines": 2787,
       "fileCategory": "code"
     },
     {
@@ -175,7 +221,7 @@
     {
       "path": "utils/process_utils.py",
       "language": "python",
-      "sizeLines": 179,
+      "sizeLines": 215,
       "fileCategory": "code"
     },
     {
@@ -191,12 +237,16 @@
       "fileCategory": "code"
     }
   ],
-  "totalFiles": 29,
+  "totalFiles": 37,
   "filteredByIgnore": 0,
-  "estimatedComplexity": "small",
+  "estimatedComplexity": "moderate",
   "importMap": {
     "__init__.py": [],
     ".understand-anything/.understandignore": [],
+    ".understand-anything/fingerprints.json": [],
+    ".understand-anything/intermediate/scan-result.json": [],
+    ".understand-anything/knowledge-graph.json": [],
+    ".understand-anything/meta.json": [],
     "configs/__init__.py": [],
     "configs/env_config.py": [],
     "configs/pillar_config.py": [],
@@ -213,8 +263,12 @@
     "envs/manager/train_manager.py": [],
     "envs/monitor.py": [],
     "envs/policy.py": [],
+    "README.md": [],
+    "requirements.txt": [],
+    "run_train.sh": [],
     "safety/__init__.py": [],
     "safety/z3_shield.py": [],
+    "test_lidar_alignment.py": [],
     "train.py": [],
     "utils/__init__.py": [],
     "utils/bridge_factory.py": [

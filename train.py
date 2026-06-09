@@ -80,7 +80,7 @@ def make_env(
         os.environ["PX4_INSTANCE"] = str(rank)
         os.environ["GZ_PARTITION"] = partition
 
-        px4_path = os.path.expanduser("~/PX4-Autopilot")
+        px4_path = os.path.expanduser("~/antruong_drone_rl/PX4-Autopilot")
         px4_bin = os.path.join(px4_path, "build/px4_sitl_default/bin/px4")
         rootfs_base_dir = os.path.join(px4_path, "build/px4_sitl_default/rootfs")
         rootfs_dir = os.path.join(rootfs_base_dir, str(rank))

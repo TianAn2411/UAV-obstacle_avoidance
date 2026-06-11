@@ -5,7 +5,7 @@ policy: MultiInputPolicy
 n_steps: 1024
 batch_size: 128
 n_epochs: 10
-learning_rate: 3.0e-4
+learning_rate: 1.0e-4
 gamma: 0.99
 gae_lambda: 0.95
 clip_range: 0.2
@@ -15,7 +15,7 @@ max_grad_norm: 0.5
 
 # Training
 total_timesteps: 10_000_000
-n_envs: 4
+n_envs: 1
 log_dir: "runs/"
 checkpoint_freq: 10_000
 

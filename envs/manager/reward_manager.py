@@ -219,15 +219,14 @@ class RewardManager:
     def _reward_time(self, step_count: int, state: StepState) -> float:
         # Escalating penalty. Source: old drone_env.py L5024-5032
         r = self._r.time_penalty_base
-        if state.num_pillars > 0:
-            if step_count > 170:
-                r += self._r.time_penalty_step170
-            if step_count > 250:
-                r += self._r.time_penalty_step250
-            if step_count > 350:
-                r += self._r.time_penalty_step350
-            if step_count > 450:
-                r += self._r.time_penalty_step450
+        if step_count > 170:
+          r += self._r.time_penalty_step170
+        if step_count > 250:
+          r += self._r.time_penalty_step250
+        if step_count > 350:
+          r += self._r.time_penalty_step350
+        if step_count > 450:
+          r += self._r.time_penalty_step450
         return r
 
     def _reward_altitude(self, state: StepState) -> tuple[float, float]:

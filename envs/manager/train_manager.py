@@ -593,6 +593,18 @@ class TrainManager:
 
         # Last action — raw policy output, already in [-1, 1]
         last_action = self._prev_action.copy()
+        # Fence distances in body FLU frame
+        margin_x_neg = ekf_pos[0] + self.ecfg.fence_x_max
+        margin_x_pos = self.ecfg.fence_x_max - ekf_pos[0]
+        margin_y_neg = ekf_pos[1] + self.ecfg.fence_y_max
+        margin_y_pos = self.ecfg.fence_y_max - ekf_pos[1]
+      
+        fence_flu_n = np.array([
+            ( cy * margin_x_pos - sy * margin_y_pos) / self.ecfg.fence_x_max,  # forward
+            (-cy * margin_x_neg + sy * margin_y_neg) / self.ecfg.fence_x_max,  # back
+            ( sy * margin_x_pos + cy * margin_y_pos) / self.ecfg.fence_y_max,  # left
+            (-sy * margin_x_neg - cy * margin_y_neg) / self.ecfg.fence_y_max,  # right
+        ], dtype=np.float32)
 
         state = np.concatenate([
             vel_flu_n,
@@ -601,9 +613,10 @@ class TrainManager:
             goal_n,
             quat,
             last_action,
+            fence_flu_n,
         ]).astype(np.float32)
 
-        assert state.shape == (18,), f"state.shape expected (18,), got {state.shape}"
+        assert state.shape == (22,), f"state.shape expected (22,), got {state.shape}"
         return state
 
     def _normalize_depth_frame(self, depth: np.ndarray) -> np.ndarray:

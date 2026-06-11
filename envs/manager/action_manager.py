@@ -96,5 +96,9 @@ class ActionManager:
                 vz = cfg.takeoff_assist_vz * 0.5
             else:
                 vz = cfg.takeoff_assist_vz * 0.2
+            
+            #Safe traninig
+        if altitude < cfg.airborne_z and self._cmd_vel[2] < 0.0:
+            vz = 0.0
 
         return ActionOutput(vx=vx, vy=vy, vz=vz, yaw_rate=yr)

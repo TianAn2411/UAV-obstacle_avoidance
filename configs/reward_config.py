@@ -39,7 +39,7 @@ class RewardConfig:
     # Example: at step 200 → -0.08 + -0.12 = -0.20/step
     # Example: at step 400 → -0.08 + -0.12 + -0.13 + -0.15 = -0.48/step
     # Only escalates when num_pillars > 0 (stage 0-1: base only).
-    time_penalty_base: float = -0.08
+    time_penalty_base: float = -0.09
     time_penalty_step170: float = -0.12
     time_penalty_step250: float = -0.13
     time_penalty_step350: float = -0.15
@@ -104,15 +104,15 @@ class RewardConfig:
     # Example: +0.1m progress, cos=0.95 → 2.0*0.1*0.95 = +0.19 bonus
     # Example: +0.1m progress, cos=0.5  → 2.0*0.1*0.5  = +0.10 bonus (smaller)
     # Example: +0.1m progress, cos=-0.3 → 2.0*0.1*(-0.3) = -0.06 penalty
-    stage1_yaw_progress_amp: float = 0.0 #1.15 old        # amplification coef for progress × cos term
-    stage1_yaw_progress_gate: float = 0.0       # min progress (m) to trigger amplificationo
+    stage1_yaw_progress_amp: float = 1.15 #1.15 old        # amplification coef for progress × cos term
+    stage1_yaw_progress_gate: float = 0.25       # min progress (m) to trigger amplificationo
     # r = face_goal_coef * cos(yaw_error)  +  forward_bonus_or_penalty
     # Example stage1: perfectly aligned (yaw_error=0) → 0.20*1.0 + 0.40 = +0.60/step
     # Example stage1: 90° off (cos=0)                 → 0.20*0.0 - 1.23 = -1.23/step
     # backwards_yaw_penalty triggers when flying fast while facing away.
     stage1_face_goal_coef: float = 0.00
-    stage1_backwards_yaw_penalty_coef: float = 0.00 #0.2
-    stage1_backwards_yaw_speed_gate: float = 0.00   # min speed (m/s) to trigger (0.5)
+    stage1_backwards_yaw_penalty_coef: float = 0.2 #0.2
+    stage1_backwards_yaw_speed_gate: float = 0.5   # min speed (m/s) to trigger (0.5)
 
     # Forward-goal bonus/penalty — piecewise linear ramp around good_thresh
     # cos(yaw_error) >= good_thresh → bonus (drone facing goal)
@@ -126,9 +126,9 @@ class RewardConfig:
     #   cos=0.98 (11°)  →  0.00 (boundary)
     #   cos=0.00 (90°)  → -2.5 * 0.98/1.98 = -1.24 penalty
     #   cos=-1.0 (180°) → -3.5 penalty (max)
-    stage1_yaw_good_thresh: float = 0.85       # cos threshold ≈ 36.8° — above = bonus, below = penalty
-    stage1_yaw_forward_bonus_coef: float = 0.00   # max bonus at perfect alignment (cos=1.0)
-    stage1_yaw_forward_penalty_coef: float = 0.00  # max penalty at full misalignment (cos=-1.0)
+    stage1_yaw_good_thresh: float = 0.92       # cos threshold ≈ 36.8° — above = bonus, below = penalty
+    stage1_yaw_forward_bonus_coef: float = 0.5   # max bonus at perfect alignment (cos=1.0)
+    stage1_yaw_forward_penalty_coef: float = 1.55  # max penalty at full misalignment (cos=-1.0)
 
     # Stage2+ (with pillars): looser thresh=0.9275 ≈ yaw_error < 21.9° for bonus
     #   cos=1.00 (0°)   → +0.20 * 1.0 = +0.20 bonus

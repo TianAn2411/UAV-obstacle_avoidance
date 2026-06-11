@@ -458,30 +458,30 @@ class ROSBridge(Node):
                             vz = 0.0
                             yr = 0.0
 
-                            # # Z safety: chỉ can thiệp khi altitude thấp nguy hiểm
-                            # cur_z_ned = float(self.px4_lpos[2])
-                            # cur_alt = -cur_z_ned if np.isfinite(cur_z_ned) else 0.0
+                            # Z safety: chỉ can thiệp khi altitude thấp nguy hiểm
+                            cur_z_ned = float(self.px4_lpos[2])
+                            cur_alt = -cur_z_ned if np.isfinite(cur_z_ned) else 0.0
 
-                            # target_alt = self.keepalive_target_alt
-                            # deadband = self.keepalive_alt_deadband
-                            # kp = self.keepalive_z_kp
-                            # max_down = self.keepalive_max_descend_vz  # NED: dương là hạ xuống
-                            # max_up = self.keepalive_max_ascend_vz     # NED: âm là bay lên
+                            target_alt = self.keepalive_target_alt
+                            deadband = self.keepalive_alt_deadband
+                            kp = self.keepalive_z_kp
+                            max_down = self.keepalive_max_descend_vz  # NED: dương là hạ xuống
+                            max_up = self.keepalive_max_ascend_vz     # NED: âm là bay lên
 
-                            # alt_err = cur_alt - target_alt
+                            alt_err = cur_alt - target_alt
 
-                            # if cur_alt < 1.2:
-                            #     # Quá thấp: ép leo nhẹ để không rơi.
-                            #     vz = -max_up
-                            # elif alt_err > deadband:
-                            #     # Quá cao: hạ từ từ.
-                            #     vz = min(max_down, kp * alt_err)
-                            # elif alt_err < -deadband:
-                            #     # Thấp hơn target: leo nhẹ.
-                            #     vz = -min(max_up, kp * (-alt_err))
-                            # else:
-                            #     # Trong vùng hợp lý: hover.
-                            #     vz = 0.0
+                            if cur_alt < 1.2:
+                                # Quá thấp: ép leo nhẹ để không rơi.
+                                vz = -max_up
+                            elif alt_err > deadband:
+                                # Quá cao: hạ từ từ.
+                                vz = min(max_down, kp * alt_err)
+                            elif alt_err < -deadband:
+                                # Thấp hơn target: leo nhẹ.
+                                vz = -min(max_up, kp * (-alt_err))
+                            else:
+                                # Trong vùng hợp lý: hover.
+                                vz = 0.0
                             with self._last_setpoint_lock:
                                 now_recheck = self.get_clock().now().nanoseconds * 1e-9
                                 last_t_recheck = float(self._last_setpoint_time)
@@ -1319,51 +1319,10 @@ class ROSBridge(Node):
         Không dùng TFMessage.
         """
         model_pose_topic = f"/model/{self.model_name}/pose"
-        dynamic_pose_topic = f"/world/{self.world_name}/dynamic_pose/info"
 
-        # if self._start_native_gz_pose_listener(dynamic_pose_topic):
-        #     return
-
-        self.logger.warning(
-            f"[GZ POSE] native gz transport unavailable; falling back to ROS model pose. "
-            f"model_pose_topic={model_pose_topic} "
-            f"dynamic_pose_topic={dynamic_pose_topic} "
-            f"model={self.model_name} GZ_PARTITION={self.gz_partition}"
-        )
-
-        if self._start_ros_model_pose_listener(model_pose_topic):
-            return
-
-        if EntityPose_V is not None:
-            self.gz_pose_sub = self.create_subscription(
-                EntityPose_V,
-                dynamic_pose_topic,
-                self._gz_entity_pose_cb,
-                self.qos,
-            )
-
-            self.logger.info(
-                f"[GZ POSE] source=ros_entity_pose_v "
-                f"topic={dynamic_pose_topic} "
-                f"model={self.model_name} "
-                f"GZ_PARTITION={self.gz_partition}"
-            )
-            self._start_pose_health_check(
-                source="ros_entity_pose_v",
-                topic=dynamic_pose_topic,
-            )
-            return
-
-        self.logger.error(
-            f"[GZ POSE] all typed pose sources failed; "
-            f"source=text_parser_fallback "
-            f"topic={dynamic_pose_topic} "
-            f"model={self.model_name} "
-            f"GZ_PARTITION={self.gz_partition}"
-        )
-
-        self._start_gz_pose_parser_fallback(dynamic_pose_topic)
-
+        if not self._start_ros_model_pose_listener(model_pose_topic):
+            raise RuntimeError(f"[GZ POSE] ROS2 pose topic unavailable: {model_pose_topic}")
+            
     def _start_native_gz_pose_listener(self, topic):
         """
         Native Gazebo Transport subscriber for gz.msgs.Pose_V.
@@ -1829,7 +1788,7 @@ class ROSBridge(Node):
             for _ in range(10):
                 self.send_velocity(0.0, 0.0, 0.0, 0.0)
                 self._spin_once()
-            self.enable_offboard_keepalive(False)
+            # self.enable_offboard_keepalive()
             return True
 
         self.logger.debug(
@@ -1907,7 +1866,7 @@ class ROSBridge(Node):
             return False
 
         self.logger.debug(f"[ARM] OFFBOARD velocity takeoff done. best_alt={best_alt:.2f}")
-        self.enable_offboard_keepalive(False)  # Không cần giữ setpoint khi đã ổn định ở độ cao mong muốn
+        # self.enable_offboard_keepalive(True)  # Không cần giữ setpoint khi đã ổn định ở độ cao mong muốn
         return True
 
 

@@ -64,7 +64,7 @@ def make_env(
         # Each Gazebo instance needs ~15-20s to fully start (load world, register
         # services). SubprocVecEnv starts all envs in parallel so we stagger
         # manually. — old L1006-1016
-        STARTUP_STAGGER_S = 0  # seconds between each rank (Gazebo needs ~15-20s)
+        STARTUP_STAGGER_S = 5  # seconds between each rank (Gazebo needs ~15-20s)
         if rank > 0 and total_envs > 1:
             wait_s = rank * STARTUP_STAGGER_S
             logger.info(
@@ -506,6 +506,8 @@ def run_training(stage: int = 1) -> None:
     )
 
     try:
+        model.tensorboard_log = log_dir
+        
         model.learn(
             total_timesteps=conf["min_steps"],
             callback=[ckpt_callback, monitor_callback],

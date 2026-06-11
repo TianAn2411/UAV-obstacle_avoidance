@@ -7,7 +7,7 @@ class EnvConfig:
     depth_shape: tuple = (3, 84, 84)       # depth obs: 3 stacked 84x84 frames
     depth_min: float = 0.0
     depth_max: float = 10.0
-    state_dim: int = 18   # 3 vel + 3 ang_vel + 1 alt + 3 goal + 4 quat + 4 last_action
+    state_dim: int = 22   # 3 vel + 3 ang_vel + 1 alt + 3 goal + 4 quat + 4 last_action + 4 fence_flu
     action_dim: int = 4                    # [vx, vy, vz, yaw_rate]
     # Sim-to-real observation noise: x_noisy = x + N(0, σ²), applied in
     # train_manager.py:_build_state_vector — only the policy observation is noised,
@@ -46,7 +46,7 @@ class EnvConfig:
     fence_x_max: float = 15.0
     fence_y_min: float = -15.0
     fence_y_max: float = 15.0
-    fence_z_min: float = -0.3
+    fence_z_min: float = 0.3
     fence_z_max: float = 8.0
 
     # Velocity limits (applied by ActionManager)
@@ -141,8 +141,8 @@ class EnvConfig:
     rescue_timeout_buffer_s: float = 2.0
     rescue_expected_speed_factor: float = 0.5
     rescue_xy_speed_max: float = 2.5
-    rescue_target_alt_m: float = 2.8
+    rescue_target_alt_m: float = 3.0
     rescue_xy_kp: float = 1.5
 
     # Reset — multi-env fast reset trigger reasons (from old drone_env.py L634-638)
-    multi_env_fast_reset_reasons: tuple = ("fell_to_ground", "ground", "flipped", "out_of_fence")
+    multi_env_fast_reset_reasons: tuple = ("fell_to_ground", "ground", "flipped")

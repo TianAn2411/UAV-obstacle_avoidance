@@ -99,6 +99,6 @@ class ActionManager:
             
             #Safe traninig
         if altitude < cfg.airborne_z and self._cmd_vel[2] < 0.0:
-            vz = 0.0
+            vz = max(1.2, self._cmd_vel[2])
 
         return ActionOutput(vx=vx, vy=vy, vz=vz, yaw_rate=yr)

@@ -267,7 +267,15 @@ class ResetManager:
                 continue
 
             self._reset_land_force_disarm()
-            self._idle_spin(duration=2.0)
+            # Extra wait for failure_detector to clear: FD resets when drone is disarmed + stable.
+            # If fd_critical_failure is active, arm will be TEMPORARILY_REJECTED until FD clears.
+            fd_status = int(getattr(self.bridge, "failure_detector_status", 0))
+            post_disarm_wait = 4.0 if fd_status != 0 else 2.0
+            if fd_status != 0:
+                self.logger.warning(
+                    f"[RESET] failure_detector_status={fd_status} — extending post-disarm wait to {post_disarm_wait}s for FD to clear"
+                )
+            self._idle_spin(duration=post_disarm_wait)
 
             tp_wall = time.monotonic()
             tp_min_stamp = self.bridge.get_clock().now().nanoseconds * 1e-9
@@ -277,7 +285,9 @@ class ResetManager:
                 continue
 
             self._wait_gz_pose_near(teleport_target, tol=0.15, stable_hits=3, timeout=3.0, min_stamp=tp_min_stamp)
-            self._idle_spin(duration=0.5)
+            # Gazebo set_pose does NOT reset physics velocity — drone may still tumble after teleport.
+            # Wait 4s for ground contact + friction to zero out residual velocity before EKF burst.
+            self._idle_spin(duration=4.0)
             self._wait_gz_pose_near(teleport_target, tol=0.10, stable_hits=1, timeout=0.6)
 
             self.bridge.prime_visual_odometry_after_reset(
@@ -835,18 +845,19 @@ class ResetManager:
         return False, last_info
 
     def _skip_ekf_renotify_if_estimator_unstable(self, context: str) -> bool:
-        """If PX4 estimator insane, skip EKF renotify and return True. Source: old drone_env.py L8112."""
+        """Log estimator state but NEVER skip re-notify — skipping when insane creates a deadlock
+        (insane → skip → stays insane → arm fails → repeat until deadline)."""
         if not self._px4_estimator_insane():
             return False
         px4_lpos = getattr(self.bridge, "px4_lpos", np.zeros(3, dtype=np.float32))
         vel = self.bridge.get_linear_velocity()
         self.logger.warning(
-            f"{context} skip EKF re-notify because estimator is unstable "
+            f"{context} estimator unstable — will still re-notify EKF "
             f"px4_lpos={np.round(px4_lpos, 3).tolist()} "
             f"vel={np.round(vel, 3).tolist()} "
             f"preflight={getattr(self.bridge, 'preflight_ok', False)}"
         )
-        return True
+        return False  # never skip — insane is exactly when re-notify is needed most
 
     # ------------------------------------------------------------------ #
     # Velocity / motion helpers                                          #

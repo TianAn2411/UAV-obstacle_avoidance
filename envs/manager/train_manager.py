@@ -531,14 +531,15 @@ class TrainManager:
         ang_vel: np.ndarray,
     ) -> np.ndarray:
         """
-        18-dim ego-centric state vector (all from EKF/IMU, no GT leaks).
+        22-dim ego-centric state vector (all from EKF/IMU, no GT leaks).
         Layout:
           [0:3]   linear vel  [vx, vy, vz]  FLU  (+noise)
           [3:6]   angular vel [rx, py, yaw_r]  FLU  (+noise)
           [6]     altitude z  ENU            (+noise)
           [7:10]  goal in body-FLU [body_x, body_y, body_z]  (using noisy EKF pos+yaw)
-          [10:14] quaternion [qw, qx, qy, qz] ENU/FLU (unit, already in [-1,1])
+          [10:14] orientation [sin_yaw, cos_yaw, pitch/45°, roll/45°]  (no sign ambiguity)
           [14:18] last action [vx, vy, vz, yaw_rate] (in [-1,1])
+          [18:22] fence margins body-FLU [fwd, back, left, right] normalized
         """
         ekf_pos = np.asarray(ekf_pos, dtype=np.float32)
         vel     = np.asarray(vel,     dtype=np.float32)
@@ -585,11 +586,22 @@ class TrainManager:
             body_z / self.ecfg.goal_z_norm,
         ], dtype=np.float32)
 
-        # Quaternion [qw, qx, qy, qz] — unit vector, values already in [-1, 1]
-        quat = self.bridge.get_quaternion()
+        # Orientation as [sin_yaw, cos_yaw, pitch_n, roll_n] — no quaternion sign ambiguity
+        # (q and -q same rotation but policy saw discontinuous flip; Euler avoids this)
+        quat = self.bridge.get_quaternion()  # [qw, qx, qy, qz], used only to extract pitch/roll
         if self.ecfg.obs_noise_quat_std > 0.0:
             quat = quat + self._np_random.standard_normal(4).astype(np.float32) * self.ecfg.obs_noise_quat_std
             quat /= np.linalg.norm(quat)
+        qw, qx, qy, qz = float(quat[0]), float(quat[1]), float(quat[2]), float(quat[3])
+        pitch = math.asin(max(-1.0, min(1.0, 2.0 * (qw * qy - qz * qx))))
+        roll  = math.atan2(2.0 * (qw * qx + qy * qz), 1.0 - 2.0 * (qx * qx + qy * qy))
+        _MAX_TILT = math.pi / 4  # 45° normalizer — typical multirotor max tilt
+        orientation = np.array([
+            math.sin(yaw),
+            math.cos(yaw),
+            pitch / _MAX_TILT,
+            roll  / _MAX_TILT,
+        ], dtype=np.float32)
 
         # Last action — raw policy output, already in [-1, 1]
         last_action = self._prev_action.copy()
@@ -611,7 +623,7 @@ class TrainManager:
             ang_vel_flu_n,
             np.array([alt_n], dtype=np.float32),
             goal_n,
-            quat,
+            orientation,
             last_action,
             fence_flu_n,
         ]).astype(np.float32)

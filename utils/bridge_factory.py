@@ -3,6 +3,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
+from rclpy.executors import MultiThreadedExecutor
 
 import numpy as np
 import re
@@ -319,8 +320,15 @@ class ROSBridge(Node):
         self._keepalive_thread = None
         self._keepalive_stop = False
 
+        # One executor per node — _spin_worker calls executor.spin_once() exclusively.
+        # Using rclpy.spin_once(node) from multiple threads on the same node is NOT
+        # thread-safe (rclpy issues #1008, #1009, #1159): causes ValueError and dropped
+        # callbacks. MultiThreadedExecutor + single spin thread is the correct pattern.
+        self._executor = MultiThreadedExecutor()
+        self._executor.add_node(self)
+
         # Start threads AFTER all locks/state initialized
-        # Dedicated thread streams VIO at 30Hz independent of rclpy spin_once,
+        # Dedicated thread streams VIO at 30Hz independent of spin,
         # so PX4 EKF always gets odometry even during blocking gz service calls.
         self._start_vo_thread()
         # Background spin thread keeps ROS callbacks alive during blocking reset operations
@@ -385,22 +393,24 @@ class ROSBridge(Node):
         self._spin_thread.start()
 
     def _spin_worker(self):
-        """Background worker spins ROS executor at 20Hz."""
+        """Background worker drives the node's MultiThreadedExecutor.
+
+        Only this thread ever calls executor.spin_once() — no other thread touches
+        the executor or calls rclpy.spin_once(self). This is the correct single-spin-
+        thread pattern required by rclpy (issues #1008, #1009, #1159).
+        timeout_sec=0.01 → blocks up to 10ms waiting for ready callbacks.
+        """
         self.logger.info(f"[ROS SPIN] thread started model={self.model_name}")
         while not self._spin_stop:
             try:
-                rclpy.spin_once(self, timeout_sec=0.0)
+                self._executor.spin_once(timeout_sec=0.01)
             except Exception as e:
                 self.logger.debug(f"[ROS SPIN] spin_once exception: {e}")
-            time.sleep(0.05)  # 20Hz
         self.logger.info(f"[ROS SPIN] thread stopped model={self.model_name}")
 
     def _spin_once(self):
-        """Directly call rclpy.spin_once without lock (main thread only)."""
-        try:
-            rclpy.spin_once(self, timeout_sec=0.0)
-        except Exception:
-            pass
+        """Deprecated — background executor handles all callbacks. Small yield to prevent busy-loops."""
+        time.sleep(0.002)
 
     def _start_offboard_keepalive_thread(self):
         if self._keepalive_thread is not None:
@@ -1265,17 +1275,6 @@ class ROSBridge(Node):
                 f"model={self.model_name} reason={exc}"
             )
 
-    def _start_pose_health_check(self, source, topic, delay_s=3.0):
-        def _worker():
-            time.sleep(float(delay_s))
-            if not self.gz_pose_ready:
-                self.logger.warning(
-                    f"[GZ POSE WARN] no pose received after {delay_s:.1f}s. "
-                    f"source={source} topic={topic} model={self.model_name}"
-                )
-
-        threading.Thread(target=_worker, daemon=True).start()
-
     def _start_ros_model_pose_listener(self, topic):
         """Subscribe ROS 2 model pose from gz PosePublisher + ros_gz_bridge."""
         if GeometryPose is None:
@@ -1303,7 +1302,6 @@ class ROSBridge(Node):
             f"[GZ POSE] source=ros_gz_model_pose topic={topic} "
             f"model={self.model_name} GZ_PARTITION={self.gz_partition}"
         )
-        self._start_pose_health_check(source="ros_gz_model_pose", topic=topic)
         return True
 
     def _start_gz_pose_listener(self):
@@ -1360,7 +1358,6 @@ class ROSBridge(Node):
             f"GZ_PARTITION={self.gz_partition}"
         )
 
-        self._start_pose_health_check(source="native_gz_transport", topic=topic)
         return True
 
 
@@ -1705,18 +1702,23 @@ class ROSBridge(Node):
             p1=0.0,
             p2=force_magic,
         )
-        threading.Thread(target=self._publish_zero_setpoints_post_disarm, daemon=True).start()
+        if not getattr(self, "_post_disarm_thread_active", False):
+            self._post_disarm_thread_active = True
+            threading.Thread(target=self._publish_zero_setpoints_post_disarm, daemon=True).start()
 
     def _publish_zero_setpoints_post_disarm(self, duration: float = 2.0, hz: float = 10.0) -> None:
         """Publish zero velocity setpoints after disarm to prevent offboard_control_signal_lost log noise."""
         interval = 1.0 / hz
         deadline = time.monotonic() + duration
-        while time.monotonic() < deadline:
-            try:
-                self._publish_velocity_setpoint(0.0, 0.0, 0.0, 0.0)
-            except Exception:
-                break
-            time.sleep(interval)
+        try:
+            while time.monotonic() < deadline:
+                try:
+                    self._publish_velocity_setpoint(0.0, 0.0, 0.0, 0.0)
+                except Exception:
+                    break
+                time.sleep(interval)
+        finally:
+            self._post_disarm_thread_active = False
 
     def wait_until_armed(
         self, timeout=0.8, stream_mode="position", target_z_ned=-1.2
@@ -1788,7 +1790,7 @@ class ROSBridge(Node):
             for _ in range(10):
                 self.send_velocity(0.0, 0.0, 0.0, 0.0)
                 self._spin_once()
-            # self.enable_offboard_keepalive()
+            self.enable_offboard_keepalive(True)
             return True
 
         self.logger.debug(
@@ -1866,7 +1868,7 @@ class ROSBridge(Node):
             return False
 
         self.logger.debug(f"[ARM] OFFBOARD velocity takeoff done. best_alt={best_alt:.2f}")
-        # self.enable_offboard_keepalive(True)  # Không cần giữ setpoint khi đã ổn định ở độ cao mong muốn
+        self.enable_offboard_keepalive(True)  # protect offboard signal during idle gaps between episodes
         return True
 
 
@@ -2140,9 +2142,20 @@ class ROSBridge(Node):
             and near_ratio > near_ratio_thresh
         )
 
+    def _ensure_threads_alive(self):
+        """Restart VIO/spin threads if they died silently."""
+        if self._vo_thread is None or not self._vo_thread.is_alive():
+            self.logger.warning(f"[WATCHDOG] VIO thread dead — restarting model={self.model_name}")
+            self._start_vo_thread()
+        if self._spin_thread is None or not self._spin_thread.is_alive():
+            self.logger.warning(f"[WATCHDOG] spin thread dead — restarting model={self.model_name}")
+            self._start_ros_spin_thread()
+
     def tick(self, dt, max_wall_s=None):
         dt = float(dt)
         max_wall_s = float(max_wall_s if max_wall_s is not None else min(dt + 0.05, 0.20))
+
+        self._ensure_threads_alive()
 
         start = time.monotonic()
         end_time = start + dt

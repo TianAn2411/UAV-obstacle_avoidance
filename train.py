@@ -31,7 +31,7 @@ from obstacle_avoidance.utils.process_utils import (
     start_gz_depth_bridge,
     start_gz_lidar_bridge,
     start_gz_pose_bridge,
-    start_microxrce_agent,
+    start_microxrce_agent_single,
 )
 from obstacle_avoidance.utils.px4_manager import PX4InstanceManager
 
@@ -57,14 +57,13 @@ def make_env(
         cv2.setNumThreads(0)
 
         ros_domain = 30 + rank
-        uxrce_port = 8888 + rank
         partition = f"drone_rl_{rank}"
 
         # Stagger startup: avoid 2 Gazebo processes starting simultaneously.
         # Each Gazebo instance needs ~15-20s to fully start (load world, register
         # services). SubprocVecEnv starts all envs in parallel so we stagger
         # manually. — old L1006-1016
-        STARTUP_STAGGER_S = 5  # seconds between each rank (Gazebo needs ~15-20s)
+        STARTUP_STAGGER_S = 20  # seconds between each rank — Gazebo needs ~15-20s to fully start
         if rank > 0 and total_envs > 1:
             wait_s = rank * STARTUP_STAGGER_S
             logger.info(
@@ -80,7 +79,7 @@ def make_env(
         os.environ["PX4_INSTANCE"] = str(rank)
         os.environ["GZ_PARTITION"] = partition
 
-        px4_path = os.path.expanduser("~/antruong_drone_rl/PX4-Autopilot")
+        px4_path = os.path.expanduser("~/PX4-Autopilot")
         px4_bin = os.path.join(px4_path, "build/px4_sitl_default/bin/px4")
         rootfs_base_dir = os.path.join(px4_path, "build/px4_sitl_default/rootfs")
         rootfs_dir = os.path.join(rootfs_base_dir, str(rank))
@@ -129,8 +128,9 @@ def make_env(
         env_vars["PX4_SIM_MODEL"] = "gz_x500_depth"
         env_vars["PX4_GZ_WORLD"] = world_name
 
-        env_vars["PX4_UXRCE_DDS_PORT"] = str(uxrce_port)
-        env_vars["UXRCE_DDS_PORT"] = str(uxrce_port)
+        # PX4_UXRCE_DDS_PORT NOT set here — all instances connect to port 8888 (default).
+        # A single shared MicroXRCEAgent on port 8888 handles all instances.
+        # PX4 rcS distinguishes clients via UXRCE_DDS_KEY = px4_instance+1 (set from -i N).
 
         env_vars["PX4_GZ_MODEL_POSE"] = "0,0,0,0,0,0"
 
@@ -139,12 +139,9 @@ def make_env(
             f"ROS_DOMAIN_ID={ros_domain}, "
             f"PX4_INSTANCE={rank}, "
             f"GZ_PARTITION={partition}, "
-            f"UXRCE_PORT={uxrce_port}, "
+            f"UXRCE_PORT=8888(shared), "
             f"HEADLESS={headless}"
         )
-
-        # 4. Launch MicroXRCE agent — old L1088
-        xrce_proc = start_microxrce_agent(rank, ros_domain)
 
         model_name = f"x500_depth_{rank}"
         bridge_processes = []
@@ -225,7 +222,7 @@ def make_env(
             px4_ns=px4_ns,
             target_system=rank + 1,
             gz_partition=partition,
-            xrce_proc=xrce_proc,
+            xrce_proc=None,            # shared agent managed by run_training()
         )
 
         spawner = make_spawner(
@@ -380,6 +377,12 @@ def run_training(stage: int = 1) -> None:
         f"stage_start_step={stage_start_step}"
     )
 
+    # --- Single shared MicroXRCEAgent for ALL PX4 instances ---
+    # One agent on port 8888 handles N instances via unique UXRCE_DDS_KEY (px4_instance+1).
+    # Each PX4 still has its own ROS_DOMAIN_ID + DDS namespace — full isolation preserved.
+    xrce_agent = start_microxrce_agent_single(port=8888)
+    logger.info(f"[UXRCE] shared agent started port=8888 pid={xrce_agent.pid}")
+
     # --- Build vectorised env ---
     env = SubprocVecEnv([
         make_env(i, conf["num_pillars"], stage, f"stage{stage}", n_envs, env_log_dir, stage_conf=conf)
@@ -400,6 +403,15 @@ def run_training(stage: int = 1) -> None:
         logger.info(f"   {source}")
         logger.info("=" * 60)
 
+    def _log_ppo_params(model: PPO) -> None:
+        logger.info(
+            f"[PPO PARAMS] lr={model.learning_rate} | n_steps={model.n_steps} | "
+            f"batch_size={model.batch_size} | gamma={model.gamma} | "
+            f"gae_lambda={model.gae_lambda} | clip_range={model.clip_range} | "
+            f"ent_coef={model.ent_coef} | vf_coef={model.vf_coef} | "
+            f"max_grad_norm={model.max_grad_norm}"
+        )
+
     if os.path.exists(interrupted_model_path):
         _log_model_load(interrupted_model_path, f"Resume stage {stage} from INTERRUPTED model")
         model = PPO.load(
@@ -407,9 +419,11 @@ def run_training(stage: int = 1) -> None:
             env=env,
             n_steps=ppo_cfg["n_steps"],
             batch_size=ppo_cfg["batch_size"],
+            learning_rate=ppo_cfg["learning_rate"],
             device="cuda",
         )
         logger.info(f"[MODEL LOAD] loaded_num_timesteps={int(getattr(model, 'num_timesteps', -1))}")
+        _log_ppo_params(model)
 
     elif latest_ckpt is not None:
         _log_model_load(latest_ckpt, f"Resume stage {stage} from latest checkpoint")
@@ -418,32 +432,37 @@ def run_training(stage: int = 1) -> None:
             env=env,
             n_steps=ppo_cfg["n_steps"],
             batch_size=ppo_cfg["batch_size"],
+            learning_rate=ppo_cfg["learning_rate"],
             device="cuda",
         )
         logger.info(f"[MODEL LOAD] loaded_num_timesteps={int(getattr(model, 'num_timesteps', -1))}")
+        _log_ppo_params(model)
 
     elif os.path.exists(final_model_path):
         _log_model_load(final_model_path, f"Resume stage {stage} from final model")
         model = PPO.load(
             final_model_path,
             env=env,
+            learning_rate=ppo_cfg["learning_rate"],
             n_steps=ppo_cfg["n_steps"],
             batch_size=ppo_cfg["batch_size"],
             device="cuda",
         )
         logger.info(f"[MODEL LOAD] loaded_num_timesteps={int(getattr(model, 'num_timesteps', -1))}")
+        _log_ppo_params(model)
 
     elif stage > 1 and os.path.exists(prev_final_model_path):
         _log_model_load(prev_final_model_path, f"Stage-transfer: stage {stage - 1} -> {stage} (lr=1e-4)")
         model = PPO.load(
             prev_final_model_path,
             env=env,
-            learning_rate=1e-4,
+            learning_rate=ppo_cfg["learning_rate"],
             n_steps=ppo_cfg["n_steps"],
             batch_size=ppo_cfg["batch_size"],
             device="cuda",
         )
         logger.info(f"[MODEL LOAD] loaded_num_timesteps={int(getattr(model, 'num_timesteps', -1))}")
+        _log_ppo_params(model)
 
     else:
         logger.info("=" * 60)
@@ -453,13 +472,14 @@ def run_training(stage: int = 1) -> None:
             "MultiInputPolicy",
             env,
             policy_kwargs=policy_kwargs,
-            learning_rate=3e-4,
+            learning_rate=ppo_cfg["learning_rate"],
             n_steps=ppo_cfg["n_steps"],
             batch_size=ppo_cfg["batch_size"],
             verbose=1,
             tensorboard_log=log_dir,
             device="cuda",
         )
+        _log_ppo_params(model)
 
     # --- CNN freeze (stage 0/1: no pillars, train state MLP only) ---
     freeze_cnn = bool(conf.get("freeze_cnn", False))
@@ -532,6 +552,12 @@ def run_training(stage: int = 1) -> None:
             env.close()
         except BaseException as close_exc:
             logger.warning(f"[ENV CLOSE] {type(close_exc).__name__}: {close_exc}")
+        try:
+            from obstacle_avoidance.utils.process_utils import stop_bridge_process
+            stop_bridge_process(xrce_agent)
+            logger.info("[UXRCE] shared agent stopped")
+        except BaseException as agent_exc:
+            logger.warning(f"[UXRCE CLOSE] {type(agent_exc).__name__}: {agent_exc}")
 
 
 def main() -> None:

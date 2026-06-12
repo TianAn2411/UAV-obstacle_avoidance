@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 def start_microxrce_agent(rank: int, ros_domain_id: int) -> subprocess.Popen:
+    """Deprecated: use start_microxrce_agent_single() instead."""
     agent_env = os.environ.copy()
     agent_env["ROS_DOMAIN_ID"] = str(ros_domain_id)
 
@@ -26,6 +27,25 @@ def start_microxrce_agent(rank: int, ros_domain_id: int) -> subprocess.Popen:
     return subprocess.Popen(
         ["MicroXRCEAgent", "udp4", "-p", str(port)],
         env=agent_env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def start_microxrce_agent_single(port: int = 8888) -> subprocess.Popen:
+    """Start ONE shared MicroXRCEAgent for ALL PX4 instances.
+
+    Multiple PX4 clients distinguish themselves via UXRCE_DDS_KEY (set by
+    PX4 rcS as px4_instance+1). Each client still gets its own DDS domain
+    via UXRCE_DDS_DOM_ID=ROS_DOMAIN_ID. No ROS_DOMAIN_ID needed on the
+    agent itself — the agent is domain-agnostic at transport level.
+    """
+    logger.info(f"[UXRCE] Starting single shared MicroXRCEAgent port={port}")
+
+    return subprocess.Popen(
+        ["MicroXRCEAgent", "udp4", "-p", str(port)],
+        env=os.environ.copy(),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,

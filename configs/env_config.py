@@ -7,7 +7,7 @@ class EnvConfig:
     depth_shape: tuple = (3, 84, 84)       # depth obs: 3 stacked 84x84 frames
     depth_min: float = 0.0
     depth_max: float = 10.0
-    state_dim: int = 22   # 3 vel + 3 ang_vel + 1 alt + 3 goal + 4 quat + 4 last_action + 4 fence_flu
+    state_dim: int = 22   # 3 vel + 3 ang_vel + 1 alt + 3 goal + 4 orientation(sin_yaw,cos_yaw,pitch_n,roll_n) + 4 last_action + 4 fence_flu
     action_dim: int = 4                    # [vx, vy, vz, yaw_rate]
     # Sim-to-real observation noise: x_noisy = x + N(0, σ²), applied in
     # train_manager.py:_build_state_vector — only the policy observation is noised,

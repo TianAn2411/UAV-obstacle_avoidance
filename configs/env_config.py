@@ -56,9 +56,11 @@ class EnvConfig:
     vz_down_limit: float = 0.6
     yaw_rate_limit: float = 0.5
     action_smoothing: float = 0.35
-    freeze_vz: bool = False  # Stage 0: lock vz=0, drone learns horizontal nav only
-    freeze_vz_hold_alt: float = 3.2  # target altitude (m) to hold when freeze_vz=True
-    freeze_vz_kp: float = 2.0        # P-gain for altitude hold controller
+    freeze_vz: bool = False  # Stage 0: soft-band vz constraint
+    freeze_vz_band_low: float = 2.0   # if z < this AND vz_cmd < 0 → override climb
+    freeze_vz_band_high: float = 3.5  # if z > this → P-controller descend to band_high
+    freeze_vz_hold_alt: float = 3.2   # legacy, unused by soft band
+    freeze_vz_kp: float = 2.0         # P-gain for upper boundary enforcement
 
     # Altitude safe band
     alt_min: float = 0.8

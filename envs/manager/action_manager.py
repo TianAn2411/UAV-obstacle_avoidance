@@ -49,9 +49,12 @@ class ActionManager:
         target_vx = float(raw[0]) * max_vx
         target_vy = float(raw[1]) * max_vy
         # action[2] positive = fly up (ENU); bridge converts to PX4 NED internally
-        # freeze_vz: feed 0 into EMA to drain buffer; P-controller overrides output below
         if cfg.freeze_vz:
-            target_vz = 0.0
+            in_band = cfg.freeze_vz_band_low <= altitude <= cfg.freeze_vz_band_high
+            if in_band:
+                target_vz = float(raw[2]) * (cfg.vz_up_limit if raw[2] >= 0.0 else cfg.vz_down_limit)
+            else:
+                target_vz = 0.0  # drain EMA when outside band
         else:
             target_vz = float(raw[2]) * (cfg.vz_up_limit if raw[2] >= 0.0 else cfg.vz_down_limit)
         target_yr = float(raw[3]) * cfg.yaw_rate_limit
@@ -78,10 +81,16 @@ class ActionManager:
         vz = float(self._cmd_vel[2])
         yr = float(self._cmd_vel[3])
 
-        # --- freeze_vz: override vz with P-controller output, bypass smoothed value ---
+        # --- freeze_vz soft band: override only at boundaries ---
         if cfg.freeze_vz:
-            alt_error = self._hold_alt - altitude
-            vz = float(np.clip(alt_error * cfg.freeze_vz_kp, -cfg.vz_down_limit, cfg.vz_up_limit))
+            if altitude < cfg.freeze_vz_band_low:
+                # Only intervene if policy is commanding downward
+                if vz < 0.0:
+                    vz = cfg.vz_up_limit * 0.5  # gentle forced climb
+            elif altitude > cfg.freeze_vz_band_high:
+                # P-controller descend back to band_high
+                alt_error = cfg.freeze_vz_band_high - altitude  # negative
+                vz = float(np.clip(alt_error * cfg.freeze_vz_kp, -cfg.vz_down_limit, 0.0))
 
         # --- Takeoff assist: lock XY/yaw and command climb until airborne ---
         # Applied after smoothing; overrides cmd but does NOT update _cmd_vel state

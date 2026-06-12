@@ -287,6 +287,62 @@ obstacle_avoidance/
 
 ---
 
+## CPU Tuning (`configs/machine_config.yaml`)
+
+File này cho phép tùy chỉnh CPU allocation theo từng máy. Mặc định tắt toàn bộ pinning để đảm bảo ổn định.
+
+```yaml
+# configs/machine_config.yaml
+
+pin_processes: false         # true = dùng sched_setaffinity để pin PX4 + bridges
+                             # CẢNH BÁO: KHÔNG pin Python worker — chứa keepalive 5Hz
+
+main_process_cores: "0-3"   # cores dành cho main PPO process (PyTorch)
+torch_num_threads: 4         # intra-op threads (matrix ops) — luôn active khi > 0
+torch_interop_threads: 2     # inter-op threads — luôn active khi > 0
+
+cores_per_env: 6             # số cores cấp cho mỗi rank khi pin_processes=true
+                             # rank 0 → cores 4-9, rank 1 → cores 10-15, ...
+```
+
+### Các thành phần và tác dụng
+
+| Param | Khi nào có tác dụng | Ghi chú |
+|---|---|---|
+| `torch_num_threads` | Luôn luôn (nếu > 0) | Giới hạn PyTorch thread của main PPO process |
+| `torch_interop_threads` | Luôn luôn (nếu > 0) | Giới hạn inter-op parallelism của PyTorch |
+| `pin_processes` | Khi `true` | Pin PX4 + bridge processes vào dedicated core group |
+| `main_process_cores` | Khi `pin_processes=true` | Pin main PPO process vào core range này |
+| `cores_per_env` | Khi `pin_processes=true` | Cores cấp cho PX4 + bridges mỗi rank |
+
+### Layout core cho máy 24 core
+
+```
+cores 0-3   → main PPO process (PyTorch training)
+cores 4-9   → rank 0: PX4 + 4 bridges
+cores 10-15 → rank 1: PX4 + 4 bridges
+cores 16-21 → rank 2: PX4 + 4 bridges  (nếu n_envs=3)
+cores 22-23 → OS / processes khác
+```
+
+### Tại sao không pin Python worker?
+
+Python worker subprocess chứa:
+- **Keepalive thread** — gửi velocity setpoint mỗi 0.2s, nếu miss → PX4 vào failsafe
+- **ROS spin thread** (MultiThreadedExecutor) — nhận PX4 telemetry callbacks
+
+Nếu pin worker vào cùng 6 cores với PX4 + 4 bridges, các thread này bị CPU starvation → `KEEPALIVE STALE HOVER` → mất ổn định. Worker luôn chạy tự do theo OS scheduler.
+
+### Khuyến nghị theo máy
+
+| Số core | Cấu hình |
+|---|---|
+| 8 core | `pin_processes: false`, `torch_num_threads: 2` |
+| 16 core | `torch_num_threads: 4`, có thể thử `pin_processes: true`, `cores_per_env: 4` |
+| 24 core | `torch_num_threads: 4`, `pin_processes: true` (cấu hình mặc định trong file) |
+
+---
+
 ## Syntax Check
 
 ```bash

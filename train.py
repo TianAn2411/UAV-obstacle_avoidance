@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Callable
 
 import cv2
+import torch
 import yaml
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CheckpointCallback
@@ -38,6 +39,18 @@ from obstacle_avoidance.utils.px4_manager import PX4InstanceManager
 logger = logging.getLogger("obstacle_avoidance")
 
 
+def _get_env_cores(rank: int, machine_cfg: dict) -> list:
+    main_cores = str(machine_cfg.get("main_process_cores", "0-3"))
+    cores_per_env = int(machine_cfg.get("cores_per_env", 6))
+    if "-" in main_cores:
+        _, hi = main_cores.split("-")
+        env_start = int(hi) + 1
+    else:
+        env_start = int(main_cores) + 1
+    start = env_start + rank * cores_per_env
+    return list(range(start, start + cores_per_env))
+
+
 def make_env(
     rank: int,
     num_pillars: int,
@@ -46,6 +59,7 @@ def make_env(
     total_envs: int,
     env_log_dir: str | None = None,
     stage_conf: dict | None = None,
+    machine_cfg: dict | None = None,
 ) -> Callable:
     def _init():
         # 1. Thread limits — old L992-998
@@ -212,6 +226,25 @@ def make_env(
 
         px4_manager.start(gz_run=True)
 
+        # --- Core pinning (Tier 2): pin PX4 + bridges to dedicated cores ---
+        # NOTE: do NOT pin the Python worker process itself — it contains timing-sensitive
+        # keepalive (5 Hz) and ROS spin threads that get starved when sharing cores with PX4.
+        if machine_cfg and machine_cfg.get("pin_processes", False):
+            cores = _get_env_cores(rank, machine_cfg)
+            cores_set = set(cores)
+            if px4_manager.proc is not None:
+                try:
+                    os.sched_setaffinity(px4_manager.proc.pid, cores_set)
+                except OSError as e:
+                    logger.warning(f"[ENV {rank}] sched_setaffinity px4: {e}")
+            for bp_name, bp_proc in bridge_processes:
+                if bp_proc is not None:
+                    try:
+                        os.sched_setaffinity(bp_proc.pid, cores_set)
+                    except OSError as e:
+                        logger.warning(f"[ENV {rank}] sched_setaffinity {bp_name}: {e}")
+            logger.info(f"[ENV {rank}] [AFFINITY] pinned PX4+bridges → cores {min(cores)}-{max(cores)}")
+
         # 7. Build bridge via make_bridge(...), spawner via make_spawner(...) — old L1148-1162
         px4_ns = "" if rank == 0 else f"/px4_{rank}"
 
@@ -377,6 +410,34 @@ def run_training(stage: int = 1) -> None:
         f"stage_start_step={stage_start_step}"
     )
 
+    # --- Machine config (per-machine CPU tuning) ---
+    machine_config_path = os.path.join(project_root, "configs", "machine_config.yaml")
+    machine_cfg: dict = {}
+    if os.path.exists(machine_config_path):
+        with open(machine_config_path) as _mcf:
+            machine_cfg = yaml.safe_load(_mcf) or {}
+        logger.info(f"[MACHINE CFG] {machine_cfg}")
+
+    # Tier 3: PyTorch thread limits for main PPO process
+    if machine_cfg.get("torch_num_threads"):
+        torch.set_num_threads(int(machine_cfg["torch_num_threads"]))
+    if machine_cfg.get("torch_interop_threads"):
+        try:
+            torch.set_num_interop_threads(int(machine_cfg["torch_interop_threads"]))
+        except RuntimeError:
+            pass  # already set — benign
+    if machine_cfg.get("pin_processes", False) and machine_cfg.get("main_process_cores"):
+        main_cores = str(machine_cfg["main_process_cores"])
+        try:
+            if "-" in main_cores:
+                lo, hi = map(int, main_cores.split("-"))
+                os.sched_setaffinity(0, set(range(lo, hi + 1)))
+            else:
+                os.sched_setaffinity(0, {int(main_cores)})
+            logger.info(f"[MAIN AFFINITY] pinned main process → cores {main_cores}")
+        except OSError as e:
+            logger.warning(f"[MAIN AFFINITY] sched_setaffinity failed: {e}")
+
     # --- Single shared MicroXRCEAgent for ALL PX4 instances ---
     # One agent on port 8888 handles N instances via unique UXRCE_DDS_KEY (px4_instance+1).
     # Each PX4 still has its own ROS_DOMAIN_ID + DDS namespace — full isolation preserved.
@@ -385,7 +446,7 @@ def run_training(stage: int = 1) -> None:
 
     # --- Build vectorised env ---
     env = SubprocVecEnv([
-        make_env(i, conf["num_pillars"], stage, f"stage{stage}", n_envs, env_log_dir, stage_conf=conf)
+        make_env(i, conf["num_pillars"], stage, f"stage{stage}", n_envs, env_log_dir, stage_conf=conf, machine_cfg=machine_cfg)
         for i in range(n_envs)
     ])
 

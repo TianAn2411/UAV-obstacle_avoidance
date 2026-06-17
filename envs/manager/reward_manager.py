@@ -7,11 +7,11 @@ import math
 
 @dataclass
 class RewardComponents:
+    # PBRS + RM
+    pbrs: float = 0.0
+    rm_bonus: float = 0.0
     # Navigation
-    progress: float = 0.0
     time: float = 0.0
-    velocity_goal: float = 0.0
-    heading_goal: float = 0.0
     # Altitude
     ground: float = 0.0
     altitude: float = 0.0
@@ -22,7 +22,6 @@ class RewardComponents:
     yaw_rate_penalty: float = 0.0
     # Goal alignment
     yaw_align: float = 0.0
-    backwards_yaw: float = 0.0
     # Spatial penalties
     lateral: float = 0.0
     near_fence: float = 0.0
@@ -30,19 +29,10 @@ class RewardComponents:
     # Pillar-specific
     pillar_too_close: float = 0.0
     pillar_clearance_soft: float = 0.0
-    pillar_passed: float = 0.0
-    clearance_progress: float = 0.0
     near_miss: float = 0.0
     collision_course: float = 0.0
     clearance_body: float = 0.0
-    # Subgoal rewards
-    stage1_subgoal: float = 0.0
-    bypass_subgoal: float = 0.0
-    ring_subgoal: float = 0.0
-    bypass_decision: float = 0.0
-    bypass_progress: float = 0.0
     # Pillar attention / behavior
-    obstacle_visibility: float = 0.0
     obstacle_slowdown: float = 0.0
     pillar_attention: float = 0.0
     post_pillar: float = 0.0
@@ -88,6 +78,10 @@ class StepState:
     min_depth: float                       # global min depth this step
     final_yaw_rate: float                 # actual yaw rate sent to bridge
     yaw_error: float                       # wrap_pi(desired_yaw - current_yaw)
+    # DFA state (P-NSRL)
+    dfa_q: int = 0                         # current DFA state index (0..N)
+    dfa_N: int = 1                         # total subgoal checkpoints this episode
+    dfa_q_prev: int = 0                    # DFA state at previous step (detect transition)
 
 
 class RewardManager:
@@ -103,12 +97,29 @@ class RewardManager:
         self._prev_min_depth: float = float("inf")
         self._prev_horizontal_speed: float = 0.0
         self._was_near_obstacle: bool = False
+        self._prev_phi: float = 0.0        # Φ(s_{t-1}, q_{t-1}) for PBRS
+        self._dist_norm: float = 1.0  # set per episode in reset_episode()
 
-    def reset_episode(self) -> None:
+    def _phi(self, dist_xy: float, dfa_q: int, dfa_N: int) -> float:
+        """Hybrid potential: Φ(s,q) = β*(q/N) + α*(1 - dist/dist_norm)
+        dist_norm = dist_start of this episode → Φ=0 at start, Φ=α+β at goal.
+        Hover bonus F=(γ-1)*Φ ≤ 0 everywhere (Φ ≥ 0) → no free reward.
+        """
+        r = self._r
+        phi_dfa  = float(r.pbrs_dfa_coef) * (float(dfa_q) / max(float(dfa_N), 1.0))
+        phi_dist = float(r.pbrs_dist_coef) * (1.0 - float(dist_xy) / self._dist_norm)
+        return phi_dfa + phi_dist
+
+    def reset_episode(self, dist_start: float = 0.0, dfa_N: int = 1) -> None:
         self._has_been_airborne = False
         self._prev_min_depth = float("inf")
         self._prev_horizontal_speed = 0.0
         self._was_near_obstacle = False
+        # Dynamic norm = dist_start → Φ=0 at start regardless of goal distance.
+        # Floor 4.0 guards against near-zero dist_start on startup/edge cases.
+        self._dist_norm = max(float(dist_start), 4.0)
+        # Init at Φ(s0, q=0) — avoids potential shock at step 1
+        self._prev_phi = self._phi(dist_xy=dist_start, dfa_q=0, dfa_N=dfa_N)
 
     # ------------------------------------------------------------------ #
     # Main interface                                                      #
@@ -118,22 +129,35 @@ class RewardManager:
         c = RewardComponents()
         obstacle_enabled = state.num_pillars > 0
 
-        # --- Navigation ---
-        progress = state.prev_dist_xy - state.dist_xy
-        c.progress = self._reward_progress(state, progress)
+        # --- PBRS (Hybrid Potential) ---
+        # Standard PBRS: F = γΦ(s') - Φ(s) at every step.
+        # No Grzes terminal correction — that was designed for negative Φ and would
+        # give F = -Φ_prev = -25 at the goal terminal step, penalising success.
+        phi_current = self._phi(state.dist_xy, state.dfa_q, state.dfa_N)
+        c.pbrs = float(self._r.pbrs_gamma) * phi_current - self._prev_phi
+        self._prev_phi = phi_current
+
+        # --- Reward Machine bonus ---
+        rm = 0.0
+        if state.dfa_q > state.dfa_q_prev:
+            rm += float(self._r.rm_subgoal_bonus)
+        passed_count = int(state.pillar_collision_snap.get("pillars_passed_count", 0))
+        rm += float(passed_count) * float(self._r.rm_pillar_passed_bonus)
+        c.rm_bonus = rm
+
+        # --- Time ---
         c.time = self._reward_time(state.step_count, state)
-        c.velocity_goal = self._reward_velocity_goal(state)
-        c.heading_goal = self._reward_heading_goal(state)
 
         # --- Altitude ---
         c.ground, c.altitude = self._reward_altitude(state)
 
         # --- Action quality ---
         c.smooth = self._reward_smooth(state.action, state.prev_action)
-        c.yaw_rate_penalty = float(self._r.yaw_rate_penalty_coef) * abs(state.final_yaw_rate)
+        _yaw_align_w = abs(math.cos(float(state.yaw_error)))
+        c.yaw_rate_penalty = float(self._r.yaw_rate_penalty_coef) * abs(state.final_yaw_rate) * _yaw_align_w
 
-        # --- Yaw alignment (includes progress amplification) ---
-        c.yaw_align = self._reward_yaw_align(state, progress)
+        # --- Yaw alignment (no progress amplification — progress replaced by PBRS) ---
+        c.yaw_align = self._reward_yaw_align(state)
 
         # --- Spatial penalties ---
         c.lateral, c.near_fence, c.start_zone = self._reward_spatial_penalties(state)
@@ -154,21 +178,12 @@ class RewardManager:
                 c.clearance_body,
                 c.near_pillar_speed,
             ) = self._reward_pillar_clearance(state)
-            # Scale progress/yaw/velocity by danger proximity
+            # Danger scale: only yaw_align (progress/velocity_goal already removed)
             clearance_body = state.pillar_collision_snap.get("clearance_body", float("inf"))
             if np.isfinite(clearance_body) and clearance_body < self._r.clearance_body_safe:
                 danger_scale = max(0.0, min(1.0, clearance_body / self._r.clearance_body_safe))
-                c.progress *= max(0.25, danger_scale)
                 c.yaw_align *= max(0.30, danger_scale)
-                c.velocity_goal *= max(0.50, danger_scale)
-            c.pillar_passed = float(state.pillar_collision_snap.get("pillar_passed_reward", 0.0))
-            c.clearance_progress = float(state.pillar_collision_snap.get("clearance_progress_reward", 0.0))
             c.near_miss = float(state.pillar_collision_snap.get("near_miss_reward", 0.0))
-
-        # --- Subgoals ---
-        c.stage1_subgoal, c.bypass_subgoal, c.ring_subgoal = self._reward_subgoals(state)
-        c.bypass_decision = self._reward_bypass_decision(state)
-        c.bypass_progress = self._reward_bypass_progress(state)
 
         # --- Pillar behavior ---
         if obstacle_enabled:
@@ -189,17 +204,16 @@ class RewardManager:
             self._has_been_airborne = True
 
         c.total = (
-            c.progress + c.time + c.velocity_goal + c.heading_goal
+            c.pbrs + c.rm_bonus
+            + c.time
             + c.ground + c.altitude
             + c.smooth + c.yaw_rate_penalty + c.speed_penalty + c.fall_penalty
             + c.yaw_align
             + c.lateral + c.near_fence + c.start_zone
             + c.pillar_too_close + c.pillar_clearance_soft + c.collision_course
             + c.clearance_body + c.near_pillar_speed
-            + c.pillar_passed + c.clearance_progress + c.near_miss
-            + c.stage1_subgoal + c.bypass_subgoal + c.ring_subgoal
-            + c.bypass_decision + c.bypass_progress
-            + c.obstacle_visibility + c.obstacle_slowdown + c.pillar_attention
+            + c.near_miss
+            + c.obstacle_slowdown + c.pillar_attention
             + c.post_pillar + c.too_slow_penalty
             + c.terminal
         )
@@ -209,24 +223,18 @@ class RewardManager:
     # Reward computation helpers                                          #
     # ------------------------------------------------------------------ #
 
-    def _reward_progress(self, state: StepState, progress: float) -> float:
-        # Source: old drone_env.py L5015-5021
-        if progress >= 0.0:
-            coef = self._r.stage2_progress_pos_coef if state.num_pillars > 0 else self._r.progress_pos_coef
-            return coef * progress
-        return self._r.progress_neg_coef * progress
-
     def _reward_time(self, step_count: int, state: StepState) -> float:
         # Escalating penalty. Source: old drone_env.py L5024-5032
         r = self._r.time_penalty_base
-        if step_count > 170:
-          r += self._r.time_penalty_step170
-        if step_count > 250:
-          r += self._r.time_penalty_step250
-        if step_count > 350:
-          r += self._r.time_penalty_step350
-        if step_count > 450:
-          r += self._r.time_penalty_step450
+        if state.num_pillars > 0:
+            if step_count > 170:
+                r += self._r.time_penalty_step170
+            if step_count > 250:
+                r += self._r.time_penalty_step250
+            if step_count > 350:
+                r += self._r.time_penalty_step350
+            if step_count > 450:
+                r += self._r.time_penalty_step450
         return r
 
     def _reward_altitude(self, state: StepState) -> tuple[float, float]:
@@ -243,7 +251,14 @@ class RewardManager:
         # Linear penalty outside safe bounds + suboptimal low zone
         penalty = 0.0
         if z < self._e.alt_min:
-            penalty = self._r.alt_below_min_coef * (self._e.alt_min - z)
+            # Continuous with suboptimal zone: start at boundary_penalty at z=alt_min,
+            # then add extra slope. Prevents alt_below_min from being lighter than
+            # the suboptimal penalty just above alt_min (which would incentivise flying low).
+            boundary_penalty = self._r.alt_suboptimal_low_coef * (
+                self._r.alt_suboptimal_low_thresh - self._e.alt_min
+            )
+            extra_penalty = self._r.alt_below_min_coef * (self._e.alt_min - z)
+            penalty = boundary_penalty + extra_penalty
         elif z < self._r.alt_suboptimal_low_thresh:
             # In allowed range but suboptimal low (e.g., 2.0-2.5m)
             penalty = self._r.alt_suboptimal_low_coef * (self._r.alt_suboptimal_low_thresh - z)
@@ -256,44 +271,7 @@ class RewardManager:
         # Source: old drone_env.py L5066
         return self._r.smooth_penalty_coef * float(np.linalg.norm(action - prev_action))
 
-    def _reward_velocity_goal(self, state: StepState) -> float:
-        # Source: old drone_env.py L5278-5308
-        r = self._r
-        goal_vec = np.asarray(state.goal[:2], dtype=np.float32) - np.asarray(state.pos[:2], dtype=np.float32)
-        goal_dir = goal_vec / (float(np.linalg.norm(goal_vec)) + 1e-8)
-        vel_xy = np.asarray(state.vel[:2], dtype=np.float32)
-        speed_toward_goal = float(np.dot(vel_xy, goal_dir))
-
-        if state.num_pillars > 0:
-            pil_dist = state.nearest_pillar_dist if state.nearest_pillar_dist is not None else float("inf")
-            if pil_dist > r.stage2_velocity_goal_far_dist:
-                coef = r.stage2_velocity_goal_coef_far
-                if state.dist_xy < 6.0 and pil_dist > 4.0:
-                    coef *= 1.8
-            elif pil_dist > r.stage2_velocity_goal_near_dist:
-                coef = r.stage2_velocity_goal_coef_near
-            else:
-                coef = r.stage2_velocity_goal_coef_danger
-            clipped = float(np.clip(speed_toward_goal, -1.0, r.stage2_velocity_goal_clip))
-            return coef * clipped
-        else:
-            clipped = float(np.clip(speed_toward_goal, -1.0, 2.5))
-            return r.stage1_velocity_goal_coef * clipped
-
-    def _reward_heading_goal(self, state: StepState) -> float:
-        # Stage2 heading supplement. Source: old drone_env.py L5304
-        if state.num_pillars == 0:
-            return 0.0
-        vel_xy = np.asarray(state.vel[:2], dtype=np.float32)
-        goal_vec = np.asarray(state.goal[:2], dtype=np.float32) - np.asarray(state.pos[:2], dtype=np.float32)
-        goal_dir = goal_vec / (float(np.linalg.norm(goal_vec)) + 1e-8)
-        vel_xy_norm = float(np.linalg.norm(vel_xy))
-        if vel_xy_norm < 1e-6:
-            return 0.0
-        heading_align = float(np.dot(vel_xy / vel_xy_norm, goal_dir))
-        return 0.10 * heading_align * min(vel_xy_norm, 2.0)
-
-    def _reward_yaw_align(self, state: StepState, progress: float = 0.0) -> float:
+    def _reward_yaw_align(self, state: StepState) -> float:
         # Source: old drone_env.py L5127-5270
 
         r = self._r
@@ -354,10 +332,6 @@ class RewardManager:
                     * speed_to_goal
                     * abs(camera_fwd_dot)
                 )
-
-        # Progress amplification: bonus/penalty for moving while facing goal (stage0/1 only)
-        if state.num_pillars == 0 and progress > self._r.stage1_yaw_progress_gate:
-            total += self._r.stage1_yaw_progress_amp * progress * yaw_align_cos
 
         return total
 
@@ -424,13 +398,10 @@ class RewardManager:
             if clearance_body < r.clearance_body_danger:
                 x = (r.clearance_body_danger - clearance_body) / max(r.clearance_body_danger, 1e-6)
                 too_close = r.clearance_danger_penalty_coef * (x ** 2)
-            near_speed_clearance = 0.60
-            near_speed_safe_speed = 0.70
-            near_speed_coef = 2.5
-            if clearance_body < near_speed_clearance:
-                speed_excess = max(0.0, state.horizontal_speed - near_speed_safe_speed)
-                proximity = (near_speed_clearance - clearance_body) / max(near_speed_clearance, 1e-6)
-                near_speed = -near_speed_coef * proximity * speed_excess
+            if clearance_body < r.near_pillar_speed_clearance:
+                speed_excess = max(0.0, state.horizontal_speed - r.near_pillar_speed_safe)
+                proximity = (r.near_pillar_speed_clearance - clearance_body) / max(r.near_pillar_speed_clearance, 1e-6)
+                near_speed = -r.near_pillar_speed_coef * proximity * speed_excess
 
         collision_course = 0.0
         if (
@@ -445,58 +416,13 @@ class RewardManager:
             speed_w = min(max(speed_col, 0.0) / 2.0, 1.5)
             collision_course = r.collision_course_coef * risk * time_w * speed_w
 
-        clearance_body_reward = clearance_body if np.isfinite(clearance_body) else 0.0
+        if np.isfinite(clearance_body) and clearance_body > 0.0:
+            clearance_body_reward = self._r.clearance_reward_coef * min(
+                clearance_body / self._r.clearance_body_safe, 1.0
+            )
+        else:
+            clearance_body_reward = 0.0
         return too_close, clearance_soft, collision_course, clearance_body_reward, near_speed
-
-    def _reward_subgoals(self, state: StepState) -> tuple[float, float, float]:
-        # Source: delegates to PillarManager info in StepState
-        stage1 = float(state.pillar_collision_snap.get("stage1_subgoal_reward", 0.0))
-        bypass = float(state.bypass_subgoal_info.get("reward", 0.0))
-        ring = float(state.ring_subgoal_info.get("reward", 0.0))
-        return stage1, bypass, ring
-
-    def _reward_bypass_decision(self, state: StepState) -> float:
-        # Source: old drone_env.py L5368-5384
-        r = self._r
-        if state.num_pillars == 0:
-            return 0.0
-        active_bypass = state.bypass_subgoal_info.get("active_subgoal")
-        if active_bypass is None:
-            return 0.0
-        vel_xy = np.asarray(state.vel[:2], dtype=np.float32)
-        vel_xy_norm = float(np.linalg.norm(vel_xy))
-        if vel_xy_norm < r.stage2_bypass_decision_min_speed:
-            return 0.0
-        pos_xy = np.asarray(state.pos[:2], dtype=np.float32)
-        to_sg = np.asarray(active_bypass, dtype=np.float32) - pos_xy
-        to_sg_norm = float(np.linalg.norm(to_sg))
-        if to_sg_norm < 1e-6:
-            return 0.0
-        bypass_dir = to_sg / to_sg_norm
-        vel_dir = vel_xy / (vel_xy_norm + 1e-8)
-        align = float(np.dot(vel_dir, bypass_dir))
-        if align > r.stage2_bypass_decision_min_align:
-            return r.stage2_bypass_decision_reward * align * min(vel_xy_norm, 1.5)
-        return 0.0
-
-    def _reward_bypass_progress(self, state: StepState) -> float:
-        # Source: old drone_env.py L5402-5417
-        r = self._r
-        if state.num_pillars == 0:
-            return 0.0
-        pil_dist = state.nearest_pillar_dist
-        if pil_dist is None or not np.isfinite(pil_dist):
-            return 0.0
-        clearance_gain = state.bypass_subgoal_info.get("clearance_gain", 0.0)
-        progress = state.prev_dist_xy - state.dist_xy
-        in_bypass_zone = pil_dist < r.stage2_pillar_bypass_offset_m
-        if (
-            in_bypass_zone
-            and float(clearance_gain) > r.stage2_bypass_progress_min_clearance_gain
-            and progress > 0.0
-        ):
-            return r.stage2_bypass_progress_reward
-        return 0.0
 
     def _reward_pillar_behavior(self, state: StepState) -> dict:
         # Delegates to pre-computed attention_info from PillarManager
@@ -508,17 +434,7 @@ class RewardManager:
         out["attention"] = float(ai.get("attention_reward", 0.0))
         out["post_pillar"] = float(ai.get("post_pillar_reward", 0.0))
 
-        # Obstacle visibility
-        visibility = 0.0
-        if (
-            state.stage_index >= 2
-            and state.global_step < r.stage2_obstacle_visibility_end_step
-            and r.stage2_obstacle_visible_depth_min <= state.front_depth <= r.stage2_obstacle_visible_depth_max
-            and (state.nearest_pillar_dist or float("inf")) > r.stage2_obstacle_visibility_safe_pillar_dist
-            and (state.prev_dist_xy - state.dist_xy) > r.stage2_obstacle_visibility_progress_gate
-        ):
-            visibility = r.stage2_obstacle_visibility_reward
-        out["visibility"] = visibility
+        out["visibility"] = 0.0
 
         # Obstacle slowdown
         slowdown = 0.0
@@ -578,7 +494,7 @@ class RewardManager:
         if (state.is_terminal or state.is_truncated):
             fence_margin = self._fence_margin_xy(state.pos[:2])
             if fence_margin < self._e.continuous_reset_fence_margin_thresh:
-                base += r.out_of_fence_penalty * r.near_fence_terminal_penalty_factor
+                base += r.near_fence_terminal_base_penalty
 
         return base
 

@@ -1,6 +1,8 @@
 algorithm: PPO
 policy: MultiInputPolicy
 
+seed: 42
+
 # Core PPO
 n_steps: 1024
 batch_size: 128
@@ -15,7 +17,7 @@ max_grad_norm: 0.5
 
 # Training
 total_timesteps: 10_000_000
-n_envs: 2
+n_envs: 1
 log_dir: "runs/"
 checkpoint_freq: 10_000
 

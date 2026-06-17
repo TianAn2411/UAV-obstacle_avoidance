@@ -67,6 +67,7 @@ class TrainManager:
         # Carry state between steps
         self._prev_pos: np.ndarray = start_arr.copy()
         self._prev_dist_xy: float = 0.0
+        self._ep_dist_start: float = 0.0
         self._prev_action: np.ndarray = np.zeros(4, dtype=np.float32)
 
         # Depth stack
@@ -81,6 +82,11 @@ class TrainManager:
 
         # Airborne tracking for reward manager
         self._has_been_airborne: bool = False
+
+        # DFA state (P-NSRL)
+        self._dfa_q: int = 0       # current DFA state index
+        self._dfa_N: int = 1       # total subgoal checkpoints this episode
+        self._dfa_q_prev: int = 0  # DFA state at previous step
 
     def close(self) -> None:
         """Clean up bridge and flush logs. Source: old drone_env.py L8134."""
@@ -112,7 +118,13 @@ class TrainManager:
         )
 
         if decision.mode == "startup_arm":
-            self._reset_manager.startup_arm_episode_reset(self._start)
+            # For grounded reasons, drone may be far from self._start — use current pos so
+            # _startup_arm_sanity pose check doesn't fail before even trying to arm.
+            if decision.reason in {"fell_to_ground", "ground", "flipped"} and np.all(np.isfinite(pos_now)):
+                arm_start = np.array([pos_now[0], pos_now[1], 0.0], dtype=np.float32)
+            else:
+                arm_start = self._start
+            self._reset_manager.startup_arm_episode_reset(arm_start)
             new_pos = self.bridge.get_gazebo_position()
             if np.all(np.isfinite(new_pos)):
                 self._start = np.array([new_pos[0], new_pos[1], 0.0], dtype=np.float32)
@@ -171,7 +183,18 @@ class TrainManager:
         self._action_manager.reset(
             hold_alt=self.ecfg.freeze_vz_hold_alt if self.ecfg.freeze_vz else None
         )
-        self._reward_manager.reset_episode()
+
+        # DFA reset — compute N from PillarManager subgoal lists (already populated above)
+        self._dfa_q = 0
+        self._dfa_q_prev = 0
+        if self._pillar_manager._p.num_pillars == 0:
+            self._dfa_N = max(len(self._pillar_manager._stage1_sgs_xy), 1)
+        else:
+            self._dfa_N = max(len(self._pillar_manager._bypass_sgs_xy), 1)
+
+        dist_start = float(np.linalg.norm(self._goal[:2] - self._start[:2]))
+        self._ep_dist_start = dist_start
+        self._reward_manager.reset_episode(dist_start=dist_start, dfa_N=self._dfa_N)
         self._reset_manager.on_episode_end(reason)
 
         synced_pos = self.bridge.get_gazebo_position()
@@ -305,6 +328,14 @@ class TrainManager:
             step_count=self._step_count,
         )
 
+        # 4b. DFA advance — mirror subgoal index from PillarManager
+        self._dfa_q_prev = self._dfa_q
+        if self._pillar_manager._p.num_pillars == 0:
+            new_idx = self._pillar_manager._stage1_idx
+        else:
+            new_idx = self._pillar_manager._bypass_idx
+        self._dfa_q = min(new_idx, self._dfa_N)
+
         # 5. Compute obs-derived features
         depth_frame = self._normalize_depth_frame(depth_raw)
         sector_features = self._compute_depth_sector_features(depth_frame)
@@ -370,6 +401,9 @@ class TrainManager:
             min_depth=min_depth,
             final_yaw_rate=action_out.yaw_rate,
             yaw_error=yaw_error,
+            dfa_q=self._dfa_q,
+            dfa_N=self._dfa_N,
+            dfa_q_prev=self._dfa_q_prev,
         )
 
         reward, components = self._reward_manager.compute(step_state)
@@ -383,7 +417,9 @@ class TrainManager:
             pos=pos,
             dist_xy=dist_xy,
         )
+        ep_comp_snapshot: dict | None = None
         if terminated or truncated:
+            ep_comp_snapshot = dict(self._logging_manager._ep_component_sums)
             self._logging_manager.record_episode_end(
                 done_reason=done_reason,
                 episode_reward=self._ep_reward_sum,
@@ -407,6 +443,8 @@ class TrainManager:
 
         info = {
             "pos": pos,
+            "start": self._start.copy(),
+            "dist_start": self._ep_dist_start,
             "vel": vel,
             "dist_xy": dist_xy,
             "done_reason": done_reason,
@@ -415,7 +453,11 @@ class TrainManager:
             "fence_margin": self._fence_margin_xy(pos[:2]),
             "min_depth": min_depth,
             "front_depth": front_depth,
+            "dfa_q": self._dfa_q,
+            "dfa_N": self._dfa_N,
         }
+        if ep_comp_snapshot is not None:
+            info["ep_reward_components"] = ep_comp_snapshot
 
         return StepResult(
             obs=obs,
@@ -451,7 +493,13 @@ class TrainManager:
         if goal_dist_high < goal_dist_low:
             goal_dist_high = goal_dist_low
 
-        goal_bounds = (-11.5, 11.5, -11.5, 11.5)
+        _gbuf = 3.5  # buffer inside fence wall (fence=±15 → goal_bounds=±11.5)
+        goal_bounds = (
+            e.fence_x_min + _gbuf,
+            e.fence_x_max - _gbuf,
+            e.fence_y_min + _gbuf,
+            e.fence_y_max - _gbuf,
+        )
 
         if ramp_ratio < 1.0:
             for _ in range(120):
@@ -481,11 +529,15 @@ class TrainManager:
                     return np.array([gx, gy, gz], dtype=np.float32)
 
         # Fallback to corner farthest from base
+        _gcx = (e.fence_x_min + e.fence_x_max) / 2
+        _gcy = (e.fence_y_min + e.fence_y_max) / 2
+        _grx = e.fence_x_max - _gcx - _gbuf
+        _gry = e.fence_y_max - _gcy - _gbuf
         candidates = [
-            np.array([11.5, 11.5, 2.0], dtype=np.float32),
-            np.array([11.5, -11.5, 2.0], dtype=np.float32),
-            np.array([-11.5, 11.5, 2.0], dtype=np.float32),
-            np.array([-11.5, -11.5, 2.0], dtype=np.float32),
+            np.array([_gcx + _grx, _gcy + _gry, 2.0], dtype=np.float32),
+            np.array([_gcx + _grx, _gcy - _gry, 2.0], dtype=np.float32),
+            np.array([_gcx - _grx, _gcy + _gry, 2.0], dtype=np.float32),
+            np.array([_gcx - _grx, _gcy - _gry, 2.0], dtype=np.float32),
         ]
         return max(candidates, key=lambda c: float(np.linalg.norm(c[:2] - base_pos[:2])))
 
@@ -605,18 +657,39 @@ class TrainManager:
 
         # Last action — raw policy output, already in [-1, 1]
         last_action = self._prev_action.copy()
-        # Fence distances in body FLU frame
-        margin_x_neg = ekf_pos[0] + self.ecfg.fence_x_max
-        margin_x_pos = self.ecfg.fence_x_max - ekf_pos[0]
-        margin_y_neg = ekf_pos[1] + self.ecfg.fence_y_max
-        margin_y_pos = self.ecfg.fence_y_max - ekf_pos[1]
-      
+
+        # Fence distances: true ray-cast distance to each axis-aligned wall in body-FLU frame.
+        # For each body direction (dx_enu, dy_enu), find smallest positive t s.t. pos+t*dir hits a wall.
+        px, py = float(ekf_pos[0]), float(ekf_pos[1])
+        _fx_min = float(self.ecfg.fence_x_min)
+        _fx_max = float(self.ecfg.fence_x_max)
+        _fy_min = float(self.ecfg.fence_y_min)
+        _fy_max = float(self.ecfg.fence_y_max)
+        _NORM = (_fx_max - _fx_min) / 2
+
+        def _ray_dist(dx: float, dy: float) -> float:
+            d = math.inf
+            if abs(dx) > 1e-6:
+                t = (_fx_max - px) / dx if dx > 0 else (_fx_min - px) / dx
+                if t > 0:
+                    d = min(d, t)
+            if abs(dy) > 1e-6:
+                t = (_fy_max - py) / dy if dy > 0 else (_fy_min - py) / dy
+                if t > 0:
+                    d = min(d, t)
+            return d
+
         fence_flu_n = np.array([
-            ( cy * margin_x_pos - sy * margin_y_pos) / self.ecfg.fence_x_max,  # forward
-            (-cy * margin_x_neg + sy * margin_y_neg) / self.ecfg.fence_x_max,  # back
-            ( sy * margin_x_pos + cy * margin_y_pos) / self.ecfg.fence_y_max,  # left
-            (-sy * margin_x_neg - cy * margin_y_neg) / self.ecfg.fence_y_max,  # right
+            min(_ray_dist( cy,  sy), 2.0 * _NORM) / _NORM,  # forward
+            min(_ray_dist(-cy, -sy), 2.0 * _NORM) / _NORM,  # back
+            min(_ray_dist(-sy,  cy), 2.0 * _NORM) / _NORM,  # left
+            min(_ray_dist( sy, -cy), 2.0 * _NORM) / _NORM,  # right
         ], dtype=np.float32)
+
+        dfa_progress = np.array(
+            [float(self._dfa_q) / float(max(self._dfa_N, 1))],
+            dtype=np.float32,
+        )
 
         state = np.concatenate([
             vel_flu_n,
@@ -626,9 +699,10 @@ class TrainManager:
             orientation,
             last_action,
             fence_flu_n,
+            dfa_progress,   # [22] ∈ [0.0, 1.0]
         ]).astype(np.float32)
 
-        assert state.shape == (22,), f"state.shape expected (22,), got {state.shape}"
+        assert state.shape == (23,), f"state.shape expected (23,), got {state.shape}"
         return state
 
     def _normalize_depth_frame(self, depth: np.ndarray) -> np.ndarray:

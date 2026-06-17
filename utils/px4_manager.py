@@ -120,20 +120,20 @@ class PX4InstanceManager:
             "[PX4 START CONFIG] "
             f"env_id={self.rank} "
             f"mode={start_mode} "
+            f"gz_partition={self.partition} "
             f"PX4_GZ_RUN={self.env_vars.get('PX4_GZ_RUN')} "
             f"PX4_GZ_WORLD={self.env_vars.get('PX4_GZ_WORLD')} "
             f"PX4_SIM_MODEL={self.env_vars.get('PX4_SIM_MODEL')} "
             f"PX4_GZ_MODEL_NAME={self.env_vars.get('PX4_GZ_MODEL_NAME')} "
             f"PX4_SYS_AUTOSTART={self.env_vars.get('PX4_SYS_AUTOSTART')} "
             f"PX4_GZ_MODEL_POSE={self.env_vars.get('PX4_GZ_MODEL_POSE')} "
-            f"GZ_PARTITION={self.env_vars.get('GZ_PARTITION')}"
         )
 
         logger.info(
             f"[PX4 MANAGER {self.rank}] ENV CHECK "
             f"ROS_DOMAIN_ID={self.env_vars.get('ROS_DOMAIN_ID')} "
-            f"PX4_INSTANCE={self.env_vars.get('PX4_INSTANCE')} "
             f"GZ_PARTITION={self.env_vars.get('GZ_PARTITION')} "
+            f"PX4_INSTANCE={self.env_vars.get('PX4_INSTANCE')} "
             f"PX4_UXRCE_DDS_PORT={self.env_vars.get('PX4_UXRCE_DDS_PORT')} "
             f"UXRCE_DDS_PORT={self.env_vars.get('UXRCE_DDS_PORT')} "
             f"PX4_GZ_MODEL_POSE={self.env_vars.get('PX4_GZ_MODEL_POSE')} "
@@ -366,7 +366,6 @@ class PX4InstanceManager:
         logger.debug(
             f"[PX4 MANAGER {self.rank}] probe model set_pose "
             f"model={self.model_name} "
-            f"partition={self.partition} "
             f"ok={ok}"
         )
 
@@ -413,7 +412,6 @@ class PX4InstanceManager:
             f"env_id={self.rank} "
             f"model_name={self.model_name} "
             f"world_name={self.world_name} "
-            f"gz_partition={self.partition} "
             f"ros_domain_id={self.ros_domain} "
             f"px4_instance={self.rank} "
             f"px4_pid={px4_pid} "
@@ -503,7 +501,6 @@ class PX4InstanceManager:
                         f"env_id={self.rank} "
                         f"model_name={self.model_name} "
                         f"world_name={self.world_name} "
-                        f"gz_partition={self.partition} "
                         f"ros_domain_id={self.ros_domain} "
                         f"px4_instance={self.rank} "
                         f"px4_pid={getattr(self.proc, 'pid', None)} "
@@ -562,7 +559,6 @@ class PX4InstanceManager:
             f"env_id={self.rank} "
             f"model_name={self.model_name} "
             f"world_name={self.world_name} "
-            f"gz_partition={self.partition} "
             f"ros_domain_id={self.ros_domain} "
             f"px4_instance={self.rank} "
             f"px4_pid={getattr(self.proc, 'pid', None)} "

@@ -1,6 +1,6 @@
 {
-  "pid": 2080,
+  "pid": 2190,
   "version": "0.9.9",
   "socketPath": "/home/sw_an/PX4-Autopilot/obstacle_avoidance/.codegraph/daemon.sock",
-  "startedAt": 1781238997856
+  "startedAt": 1781700216559
 }

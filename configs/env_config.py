@@ -7,7 +7,7 @@ class EnvConfig:
     depth_shape: tuple = (3, 84, 84)       # depth obs: 3 stacked 84x84 frames
     depth_min: float = 0.0
     depth_max: float = 10.0
-    state_dim: int = 22   # 3 vel + 3 ang_vel + 1 alt + 3 goal + 4 orientation(sin_yaw,cos_yaw,pitch_n,roll_n) + 4 last_action + 4 fence_flu
+    state_dim: int = 23   # 3 vel + 3 ang_vel + 1 alt + 3 goal + 4 orientation(sin_yaw,cos_yaw,pitch_n,roll_n) + 4 last_action + 4 fence_flu + 1 dfa_progress
     action_dim: int = 4                    # [vx, vy, vz, yaw_rate]
     # Sim-to-real observation noise: x_noisy = x + N(0, σ²), applied in
     # train_manager.py:_build_state_vector — only the policy observation is noised,
@@ -36,7 +36,7 @@ class EnvConfig:
     # Goal sampling ramp (annulus inner/outer edge over training steps)
     goal_dist_low_start: float = 8.0
     goal_dist_low_end: float = 16.0
-    goal_dist_high_start: float = 12.0
+    goal_dist_high_start: float = 10.0
     goal_dist_high_end: float = 16.0
     goal_dist_ramp_steps: int = 350_000
     goal_dist_ramp_min_band: float = 2.0   # minimum annulus width during ramp phase
@@ -100,6 +100,7 @@ class EnvConfig:
 
     # Reset — rescue (from old drone_env.py L78)
     rescue_margin_m: float = 6.2
+    rescue_jitter_m: float = 3.0   # random XY offset added to rescue target to break same-position loops
 
     # Reset — pre-episode yaw alignment (from old drone_env.py L640-650)
     pre_episode_auto_yaw_enabled: bool = True

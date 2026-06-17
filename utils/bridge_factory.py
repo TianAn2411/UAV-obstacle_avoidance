@@ -93,9 +93,9 @@ class ROSBridge(Node):
 
         self.world_name = world_name
         self.model_name = model_name
+        self.gz_partition = gz_partition
         self.px4_ns = px4_ns.rstrip("/")
         self.target_system = int(target_system)
-        self.gz_partition = gz_partition or os.environ.get("GZ_PARTITION", "")
         project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
         rank = int(self.target_system) - 1
         log_path = os.path.join(project_root, "runs", "env_logs", f"env_{rank}.txt")
@@ -112,7 +112,6 @@ class ROSBridge(Node):
             f"world={self.world_name} "
             f"px4_ns={self.px4_ns} "
             f"target_system={self.target_system} "
-            f"GZ_PARTITION={self.gz_partition}"
         )
 
         self.cv_bridge = CvBridge()
@@ -637,9 +636,6 @@ class ROSBridge(Node):
     def _gz_env(self):
         env = os.environ.copy()
 
-        if self.gz_partition:
-            env["GZ_PARTITION"] = str(self.gz_partition)
-
         return env
 
     def _invalidate_gz_pose_cache(self):
@@ -1075,7 +1071,7 @@ class ROSBridge(Node):
             vo_pos_ned = np.array([x_ned, y_ned, z_ned])
             gz_pos_ned = np.array([float(y_enu), float(x_enu), float(-z_enu)])
             divergence = float(np.linalg.norm(vo_pos_ned - gz_pos_ned))
-            self.logger.info(
+            self.logger.debug(
                 f"[VIO DIVERGENCE] model={self.model_name} "
                 f"divergence={divergence:.3f}m "
                 f"vo_pos_ned=[{x_ned:.2f},{y_ned:.2f},{z_ned:.2f}] "
@@ -1300,7 +1296,6 @@ class ROSBridge(Node):
 
         self.logger.info(
             f"[GZ POSE] source=ros_gz_model_pose topic={topic} "
-            f"model={self.model_name} GZ_PARTITION={self.gz_partition}"
         )
         return True
 
@@ -1355,7 +1350,6 @@ class ROSBridge(Node):
             f"[GZ POSE] source=native_gz_transport "
             f"topic={topic} "
             f"model={self.model_name} "
-            f"GZ_PARTITION={self.gz_partition}"
         )
 
         return True
@@ -1402,7 +1396,6 @@ class ROSBridge(Node):
                 self.logger.debug(
                     f"[GZ POSE PARSER] start "
                     f"model={self.model_name} "
-                    f"GZ_PARTITION={self.gz_partition} "
                     f"topic={topic}"
                 )
 
@@ -1989,14 +1982,12 @@ class ROSBridge(Node):
             if result is None:
                 self.logger.error(
                     f"[Teleport] CLI spin_wrap timed out "
-                    f"model={self.model_name} GZ_PARTITION={self.gz_partition}"
                 )
                 return False
         except Exception as exc:
             self.logger.error(
                 f"[Teleport] exception "
                 f"model={self.model_name} "
-                f"GZ_PARTITION={self.gz_partition}: {exc}"
             )
             return False
 
@@ -2016,7 +2007,6 @@ class ROSBridge(Node):
                 f"[Teleport] failed. "
                 f"model={self.model_name} "
                 f"world={self.world_name} "
-                f"GZ_PARTITION={self.gz_partition} "
                 f"returncode={result.returncode} "
                 f"stdout={stdout} "
                 f"stderr={stderr}"
@@ -2062,7 +2052,6 @@ class ROSBridge(Node):
         self.logger.info(
             f"[Teleport] set_pose returned success but pose bridge did not confirm. "
             f"model={self.model_name} "
-            f"GZ_PARTITION={self.gz_partition} "
             f"target={target.tolist()} "
             f"current={pos} "
             f"gz_pose_ready={ready} "
@@ -2089,7 +2078,6 @@ class ROSBridge(Node):
             self.logger.error(
                 f"[GZ DEBUG] topic list failed "
                 f"model={self.model_name} "
-                f"GZ_PARTITION={self.gz_partition}: {exc}"
             )
             return
 
@@ -2100,7 +2088,6 @@ class ROSBridge(Node):
 
         self.logger.debug(
             f"[GZ DEBUG] model={self.model_name} "
-            f"GZ_PARTITION={self.gz_partition} "
             f"topics={lines[:30]}"
         )
 
@@ -2316,7 +2303,6 @@ class ROSBridge(Node):
             f"model={self.model_name} "
             f"px4_ns={self.px4_ns} "
             f"target_system={self.target_system} "
-            f"GZ_PARTITION={self.gz_partition} "
             f"armed={self.is_armed} "
             f"nav_state={self.nav_state} "
             f"offboard={self.offboard_enabled} "

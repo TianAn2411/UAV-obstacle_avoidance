@@ -47,6 +47,12 @@ class ResetManager:
         base = self._classify_reset_action(reason)
 
         if base == "continuous":
+            if reason in {"fell_to_ground", "ground", "flipped"}:
+                # Drone is already on ground — no teleport or EKF re-notify needed.
+                # Inside fence: rearm + takeoff (startup_arm). Near fence: hard reset to teleport first.
+                if fence_margin < self.ecfg.continuous_reset_fence_margin_thresh:
+                    return ResetDecision(mode="hard", reason=reason, do_respawn_pillars=True)
+                return ResetDecision(mode="startup_arm", reason=reason, do_respawn_pillars=True)
             if fence_margin < self.ecfg.continuous_reset_fence_margin_thresh:
                 return ResetDecision(mode="rescue_then_continuous", reason=reason, do_respawn_pillars=True)
             # Upgrade to multi_env_fast if eligible
@@ -950,13 +956,17 @@ class ResetManager:
     # ------------------------------------------------------------------ #
 
     def _compute_rescue_target_xy(self, pos_xy: np.ndarray) -> np.ndarray:
-        """Clamp pos inside fence - rescue_margin. Source: old drone_env.py L2726."""
+        """Clamp pos inside fence - rescue_margin, then add random jitter to break loop."""
         x_min = self.ecfg.fence_x_min + self.ecfg.rescue_margin_m
         x_max = self.ecfg.fence_x_max - self.ecfg.rescue_margin_m
         y_min = self.ecfg.fence_y_min + self.ecfg.rescue_margin_m
         y_max = self.ecfg.fence_y_max - self.ecfg.rescue_margin_m
         tx = float(np.clip(float(pos_xy[0]), x_min, x_max))
         ty = float(np.clip(float(pos_xy[1]), y_min, y_max))
+        jitter = float(getattr(self.ecfg, "rescue_jitter_m", 3.0))
+        if jitter > 0.0:
+            tx = float(np.clip(tx + np.random.uniform(-jitter, jitter), x_min, x_max))
+            ty = float(np.clip(ty + np.random.uniform(-jitter, jitter), y_min, y_max))
         return np.array([tx, ty], dtype=np.float32)
 
     def _rescue_to_fence_interior_by_velocity(self) -> bool:
@@ -1079,7 +1089,7 @@ class ResetManager:
             return False
         xy_err = float(np.linalg.norm(pos[:2] - start[:2]))
         z = float(pos[2])
-        return xy_err < self.ecfg.start_clearance_xy and -0.25 <= z <= 0.35
+        return xy_err < self.ecfg.start_clearance_xy and -0.25 <= z <= 0.60
 
     def _out_of_fence(self, pos: np.ndarray) -> bool:
         x, y = float(pos[0]), float(pos[1])

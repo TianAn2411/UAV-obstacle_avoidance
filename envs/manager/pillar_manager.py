@@ -244,7 +244,7 @@ class PillarManager:
             clearance_body = float("inf")
 
         # Pillar pass detection
-        reward_pillar_passed: float = 0.0
+        pillars_passed_count: int = 0
         for state in self.pillar_pass_states.values():
             if not state["entered"] or state.get("rewarded", False):
                 continue
@@ -255,25 +255,16 @@ class PillarManager:
                 continue
             if pos_t <= float(state.get("pillar_t", 0.0)) + p.post_pillar_pass_margin:
                 continue
-            reward_pillar_passed += r.passed_pillar_reward
+            pillars_passed_count += 1
             state["rewarded"] = True
             state["pass_step"] = int(step_count)
             self.avoided_pillar_count += 1
 
-        # Clearance progress reward
-        reward_clearance_progress: float = 0.0
-        in_pillar_zone = np.isfinite(nearest_dist) and nearest_dist < p.bypass_enter_radius
         clearance_improved = (
             self.prev_nearest_dist is not None
             and np.isfinite(nearest_dist)
             and nearest_dist > self.prev_nearest_dist
         )
-        # Get prev_dist_xy proxy — we don't have it, so approximate with entry_goal_dist vs dist_xy
-        # Use clearance progress like old code: in zone + clearance improved + goal dist improved
-        # We track prev_nearest_dist but don't have prev_dist_xy here;
-        # we signal clearance_progress via snap and let reward_manager use bypass_progress for the rest
-        if in_pillar_zone and clearance_improved:
-            reward_clearance_progress = r.clearance_progress_reward
 
         # Near-miss reward
         reward_near_miss: float = 0.0
@@ -357,8 +348,7 @@ class PillarManager:
             "collision_radius": (nearest_pillar_r + p.drone_trigger_radius + p.pillar_collision_margin),
             "speed": speed,
             "stage1_subgoal_reward": stage1_reward,
-            "pillar_passed_reward": reward_pillar_passed,
-            "clearance_progress_reward": reward_clearance_progress,
+            "pillars_passed_count": pillars_passed_count,
             "near_miss_reward": reward_near_miss,
             "entered_pillar_zone": self.entered_pillar_zone,
             "nearest_dist": nearest_dist,

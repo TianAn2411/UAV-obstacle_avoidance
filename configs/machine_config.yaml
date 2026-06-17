@@ -1,7 +1,7 @@
 # Per-machine CPU tuning — edit before training on a new machine.
 # Leaving pin_processes: false disables all affinity changes (safe default).
 
-pin_processes: True
+pin_processes: False
 
 
 # Main PPO process (GPU training + SB3 orchestration)

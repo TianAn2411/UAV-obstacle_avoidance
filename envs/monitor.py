@@ -14,7 +14,7 @@ from stable_baselines3.common.callbacks import BaseCallback
 class TrainingMonitor(BaseCallback):
     def __init__(
         self,
-        check_freq: int = 1000,
+        check_freq: int = 5000,
         csv_freq: int = 10000,
         verbose: int = 1,
         stage: int = 1,
@@ -48,6 +48,8 @@ class TrainingMonitor(BaseCallback):
             "ground": 0,
         }
         self.total_done_count = 0
+        self._ep_comp_window: dict[str, float] = {}
+        self._ep_comp_window_count: int = 0
         self.progress_csv_path = os.path.join(
             PROJECT_ROOT,
             "runs",
@@ -116,6 +118,21 @@ class TrainingMonitor(BaseCallback):
                 reason = str(info.get("done_reason", ""))
                 if reason in self.done_reason_counts:
                     self.done_reason_counts[reason] += 1
+                ep_comps = info.get("ep_reward_components")
+                if isinstance(ep_comps, dict):
+                    for k, v in ep_comps.items():
+                        self._ep_comp_window[k] = self._ep_comp_window.get(k, 0.0) + float(v)
+                    self._ep_comp_window_count += 1
+                    self._log_ep_reward(
+                        reason, ep_comps,
+                        steps=int(info.get("step_count", 0)),
+                        dist_xy=float(info.get("dist_xy", 0.0)),
+                        dist_start=float(info.get("dist_start", 0.0)),
+                        pos=info.get("pos"),
+                        start=info.get("start"),
+                        dfa_q=int(info.get("dfa_q", 0)),
+                        dfa_N=int(info.get("dfa_N", 1)),
+                    )
 
         # 1. Log tiến độ định kỳ [📊]
         if self.n_calls % self.check_freq == 0:
@@ -134,7 +151,6 @@ class TrainingMonitor(BaseCallback):
                 self.episode_step_sum += ep_info['l']
                 self.episode_rewards.append(ep_info['r'])
                 self.episode_lengths.append(ep_info['l'])
-                self._log_episode_summary(ep_info)
 
         return True
 
@@ -203,6 +219,8 @@ class TrainingMonitor(BaseCallback):
 
         logger.info(line1)
         logger.info(line2)
+        if self._ep_comp_window_count > 0:
+            logger.info(self._format_reward_breakdown())
         if line3:
             logger.info(line3)
         if write_csv:
@@ -268,20 +286,78 @@ class TrainingMonitor(BaseCallback):
             f"ep_len_mean={float(ep_len_mean):.1f}"
         )
         self.window_episode_count = 0
+        self._ep_comp_window.clear()
+        self._ep_comp_window_count = 0
 
-    def _log_episode_summary(self, ep_info):
-        # Hiển thị icon trạng thái
-        ep_r, ep_l = ep_info['r'], ep_info['l']
-        avg_r = self.episode_reward_sum / self.total_episodes
+    def _log_ep_reward(
+        self, reason: str, ep_comps: dict,
+        steps: int = 0, dist_xy: float = 0.0, dist_start: float = 0.0,
+        pos=None, start=None, dfa_q: int = 0, dfa_N: int = 1,
+    ) -> None:
+        s = ep_comps
+        pbrs     = s.get("pbrs", 0.0)
+        rm       = s.get("rm_bonus", 0.0)
+        terminal = s.get("terminal", 0.0)
+        total    = s.get("total", 0.0)
+        r_base   = total - pbrs - rm
+        pos_str = "(?,?,?)"
+        if pos is not None:
+            try:
+                p = pos.reshape(-1)
+                pos_str = f"({p[0]:.1f},{p[1]:.1f},{p[2]:.1f})"
+            except Exception:
+                pass
+        start_str = "(?,?)"
+        if start is not None:
+            try:
+                s2 = start.reshape(-1)
+                start_str = f"({s2[0]:.1f},{s2[1]:.1f})"
+            except Exception:
+                pass
+        base_fields = [
+            "ground", "altitude", "smooth", "speed_penalty", "yaw_align",
+            "yaw_rate_penalty", "fall_penalty", "lateral", "near_fence",
+            "time", "velocity_goal", "progress",
+        ]
+        detail = [
+            f"{f}={s.get(f, 0.0):.2f}"
+            for f in base_fields
+            if abs(s.get(f, 0.0)) >= 0.05
+        ]
+        line = (
+            f"[EP] reason={reason} steps={steps} dist={dist_xy:.2f}/{dist_start:.2f} "
+            f"dfa={dfa_q}/{dfa_N} start={start_str} pos={pos_str} | "
+            f"total={total:.1f} r_base={r_base:.1f} pbrs={pbrs:.2f} rm={rm:.2f} terminal={terminal:.1f}"
+        )
+        if detail:
+            line += " | " + " ".join(detail)
+        logger.info(line)
 
-        status = "✅" if ep_r > 50 else "❌"
-        if ep_r < -20: status = "💥" # Va chạm hoặc vượt rào
-
-        logger.info(f"[Ep {self.total_episodes:4d}] "
-              f"R: {ep_r:7.2f} | "
-              f"Steps: {ep_l:4d} | "
-              f"📈 R_avg: {avg_r:6.2f} | "
-              f"{status}")
+    def _format_reward_breakdown(self) -> str:
+        n = max(1, self._ep_comp_window_count)
+        s = self._ep_comp_window
+        pbrs     = s.get("pbrs", 0.0) / n
+        rm       = s.get("rm_bonus", 0.0) / n
+        terminal = s.get("terminal", 0.0) / n
+        total    = s.get("total", 0.0) / n
+        r_base   = total - pbrs - rm
+        base_fields = [
+            "ground", "altitude", "smooth", "speed_penalty", "yaw_align",
+            "yaw_rate_penalty", "fall_penalty", "lateral", "near_fence",
+            "time", "velocity_goal", "progress",
+        ]
+        detail = [
+            f"{f}={s.get(f, 0.0) / n:.2f}"
+            for f in base_fields
+            if abs(s.get(f, 0.0) / n) >= 0.01
+        ]
+        line = (
+            f"[REWARD] r_base={r_base:.2f} pbrs={pbrs:.2f} "
+            f"rm={rm:.2f} terminal={terminal:.2f} total={total:.2f}"
+        )
+        if detail:
+            line += " | " + " ".join(detail)
+        return line
 
     def _on_training_end(self):
         # Biểu ngữ HOÀN TẤT HUẤN LUYỆN

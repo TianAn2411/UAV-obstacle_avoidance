@@ -4,30 +4,6 @@ from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
 
 # ─────────────────────────────────────────────
-#  Residual MLP block (2 lớp, skip connection)
-# ─────────────────────────────────────────────
-class ResidualMLP(nn.Module):
-    """
-    2-layer Residual MLP với SiLU activation.
-    Input và output cùng chiều `dim` để skip connection hoạt động.
-
-        out = x + Linear(SiLU(Linear(SiLU(x))))
-    """
-
-    def __init__(self, dim: int):
-        super().__init__()
-        self.block = nn.Sequential(
-            nn.Linear(dim, dim),
-            nn.SiLU(),
-            nn.Linear(dim, dim),
-            nn.SiLU(),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x + self.block(x)
-
-
-# ─────────────────────────────────────────────
 #  Feature Extractor chính
 # ─────────────────────────────────────────────
 class DepthStateExtractor(BaseFeaturesExtractor):
@@ -41,14 +17,14 @@ class DepthStateExtractor(BaseFeaturesExtractor):
         [3:6]   ang_vel FLU norm      (roll_rate, pitch_rate, yaw_rate)
         [6]     altitude norm
         [7:10]  goal body-FLU norm    (gx, gy, gz)
-        [10:14] quaternion            (qw, qx, qy, qz)  — unit norm, [-1, 1]
+        [10:14] orientation           (sin_yaw, cos_yaw, pitch/45°, roll/45°)
         [14:18] last action           (vx, vy, vz, yaw_rate)
         [18:22] fence dist body-FLU   (forward, back, left, right)
 
     Flow:
-        depth → CNN → Linear+SiLU(3136→256) ──────────────┐
-                                                          cat(288) → fusion_fc → ResidualMLP → features
-        state(22) → Linear+SiLU(22→32) ───────────────────┘
+        depth → CNN → Linear+SiLU(3136→256) ────────────────────┐
+                                                                cat(320) → fusion_fc → LayerNorm → features
+        state(22) → Linear+SiLU(22→64) → Linear+SiLU(64→64) ───┘
     """
 
     def __init__(self, observation_space, features_dim: int = 256):
@@ -60,8 +36,8 @@ class DepthStateExtractor(BaseFeaturesExtractor):
         assert depth_channels == 3, (
             f"Expects depth channels=3, got {depth_channels}"
         )
-        assert n_state == 22, (
-            f"Expects state dim=22, got {n_state}"
+        assert n_state == 23, (
+            f"Expects state dim=23, got {n_state}"
         )
 
         # ── Nhánh CNN (depth) ──────────────────────────────────────────────
@@ -77,25 +53,26 @@ class DepthStateExtractor(BaseFeaturesExtractor):
         )
 
         # ── Nhánh State ────────────────────────────────────────────────────
-        # 22 chiều đã normalize đồng nhất → nâng lên 32 để cân bằng với CNN
-        # Giữ SiLU vì cần học tương tác phi tuyến giữa các nhóm
-        # (vel × goal, ang_vel × quaternion, v.v.)
+        # n_state→64→64: dùng n_state thay hardcode để không phải sửa lại khi dim thay đổi
         self.state_fc = nn.Sequential(
-            nn.Linear(22, 32),
+            nn.Linear(n_state, 64),
+            nn.SiLU(),
+            nn.Linear(64, 64),
             nn.SiLU(),
         )
 
-        # ── Fusion → Residual MLP ──────────────────────────────────────────
-        # cat([cnn(256), state(32)]) = 288 → features_dim
+        # ── Fusion → LayerNorm ─────────────────────────────────────────────
+        # cat([cnn(256), state(64)]) = 320 → features_dim
+        # LayerNorm thay ResidualMLP: normalize gradient scale, ít params hơn
         self.fusion_fc = nn.Sequential(
-            nn.Linear(256 + 32, features_dim),
+            nn.Linear(256 + 64, features_dim),
             nn.SiLU(),
         )
-        self.residual_mlp = ResidualMLP(features_dim)
+        self.fusion_norm = nn.LayerNorm(features_dim)
 
     # ── Forward ─────────────────────────────────────────────────────────────
     def forward(self, obs: dict) -> torch.Tensor:
         d = self.cnn_fc(self.cnn(obs["depth"]))              # (B, 256)
-        s = self.state_fc(obs["state"])                      # (B, 32)
+        s = self.state_fc(obs["state"])                      # (B, 64)
         fused = self.fusion_fc(torch.cat([d, s], dim=1))     # (B, 256)
-        return self.residual_mlp(fused)                      # (B, 256)
+        return self.fusion_norm(fused)                       # (B, 256)

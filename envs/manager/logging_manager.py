@@ -163,15 +163,6 @@ class LoggingManager:
         self._ep_step_count = int(steps)
         wall_time = time.time() - self._ep_start_wall
 
-        self._log_eps_end_block(
-            done_reason=done_reason,
-            pos=pos if pos is not None else np.zeros(3, dtype=np.float32),
-            dist_xy=self._ep_final_dist_xy,
-            reward=episode_reward,
-            wall_time=wall_time,
-            reset_action="unknown",
-        )
-        self._log_eps_reward_summary()
         self._write_ep_summary(done_reason)
         self._update_kstep_episode_metrics(done_reason)
 
@@ -542,6 +533,7 @@ class LoggingManager:
             f"ENV_{self.env_id}",
             info_log_file=new_info,
             debug_log_file=new_debug,
+            console_level=logging.WARNING,
         )
         try:
             self.logger.info(
@@ -583,8 +575,9 @@ class LoggingManager:
                 f"ENV_{self.env_id}",
                 info_log_file=info_path,
                 debug_log_file=debug_path,
+                console_level=logging.WARNING,
             )
-        return setup_logger(f"ENV_{self.env_id}")
+        return setup_logger(f"ENV_{self.env_id}", console_level=logging.WARNING)
 
     def _init_csv(self) -> None:
         assert self.log_dir is not None

@@ -27,6 +27,11 @@ except Exception:
     Empty = None
     Scene = None
 
+try:
+    from gz.msgs10.wind_pb2 import Wind as GzWind
+except Exception:
+    GzWind = None
+
 
 @contextlib.contextmanager
 def gz_partition_env(gz_partition):
@@ -298,3 +303,39 @@ class GzTransportClient:
         if result is None:
             return True
         return bool(result)
+
+    def set_wind(self, world_name: str, wx: float, wy: float, wz: float = 0.0) -> bool:
+        """Publish horizontal wind velocity (ENU m/s) to Gazebo WindEffects plugin."""
+        if not self.available():
+            return False
+
+        if GzWind is not None:
+            try:
+                topic = f"/world/{world_name}/wind"
+                with gz_partition_env(self.gz_partition):
+                    pub = self.node.advertise(topic, GzWind)
+                    msg = GzWind()
+                    msg.linear_velocity.x = float(wx)
+                    msg.linear_velocity.y = float(wy)
+                    msg.linear_velocity.z = float(wz)
+                    ok = pub.publish(msg)
+                return bool(ok)
+            except Exception as exc:
+                self.logger.debug(f"[GZ WIND] gz.msgs Wind publish failed: {exc}")
+
+        # Fallback: subprocess gz topic publish
+        try:
+            import subprocess
+            payload = f"linear_velocity: {{x: {wx:.4f}, y: {wy:.4f}, z: {wz:.4f}}}"
+            env = dict(__import__("os").environ)
+            if self.gz_partition:
+                env["GZ_PARTITION"] = str(self.gz_partition)
+            result = subprocess.run(
+                ["gz", "topic", "-t", f"/world/{world_name}/wind",
+                 "-m", "gz.msgs.Wind", "-p", payload],
+                timeout=1.0, capture_output=True, env=env,
+            )
+            return result.returncode == 0
+        except Exception as exc:
+            self.logger.debug(f"[GZ WIND] subprocess fallback failed: {exc}")
+            return False

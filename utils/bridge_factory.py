@@ -128,10 +128,11 @@ class ROSBridge(Node):
 
         self.current_amsl_alt = 0.0
         self.depth_raw = np.ones((84, 84), dtype=np.float32) * 10.0
-        self.lidar_raw = np.ones(1080, dtype=np.float32) * 30.0  # default: max range (no obstacle)
+        self.lidar_raw = np.ones(180, dtype=np.float32) * 30.0  # default: max range (no obstacle)
 
         self.gz_pos = np.zeros(3, dtype=np.float32)
         self.gz_quat = [1.0, 0.0, 0.0, 0.0]  # [w, x, y, z] ENU/FLU, identity default
+        self.ekf_q = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)  # [w, x, y, z] FRD→NED (EKF estimate)
         self.gz_pose_ready = True   # stream zeros until first Gz callback; EKF prefers continuous VIO over gaps
         self.gz_pose_stamp = 0.0
         self.gz_pose_source = "default_spawn"
@@ -159,7 +160,7 @@ class ROSBridge(Node):
         self._last_control_mode_wall = 0.0
         self._last_local_pos_wall = 0.0
         self._last_estimator_flags_wall = 0.0
-        self._last_att_wall = 0.0
+        self._last_odom_wall = 0.0
         self._last_status_px4_ts = 0
         self._last_local_pos_px4_ts = 0
         self._last_estimator_flags_px4_ts = 0
@@ -229,12 +230,6 @@ class ROSBridge(Node):
             self.qos,
         )
 
-        self.att_sub = self.create_subscription(
-            VehicleAttitude,
-            self._px4_topic("/fmu/out/vehicle_attitude"),
-            self._att_cb,
-            self.qos,
-        )
 
         self.local_pos_sub = self.create_subscription(
             VehicleLocalPosition,
@@ -498,7 +493,7 @@ class ROSBridge(Node):
                             if age_recheck <= self.keepalive_stale_time:
                                 time.sleep(self.keepalive_period)
                                 continue
-                            self._publish_velocity_setpoint(vx, vy, 0.0, yr)
+                            self._publish_velocity_setpoint(vx, vy, vz, yr)
 
                             # Log throttle: tối đa 2.5 giây 1 lần
                             if now - self._last_keepalive_log_time >= 3.0:
@@ -711,25 +706,6 @@ class ROSBridge(Node):
                     force=True,
                 )
 
-    def _att_cb(self, msg):
-        self._last_att_wall = time.monotonic()
-        q = msg.q
-        w, x, y, z = q[0], q[1], q[2], q[3]
-
-        sinr_cosp = 2.0 * (w * x + y * z)
-        cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
-        self.roll = math.atan2(sinr_cosp, cosr_cosp)
-
-        sinp = 2.0 * (w * y - z * x)
-        if abs(sinp) >= 1.0:
-            self.pitch = math.copysign(math.pi / 2.0, sinp)
-        else:
-            self.pitch = math.asin(sinp)
-
-        siny_cosp = 2.0 * (w * z + x * y)
-        cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
-        self.yaw = math.atan2(siny_cosp, cosy_cosp)
-
     def _estimator_flags_cb(self, msg):
         self._last_estimator_flags_wall = time.monotonic()
         self._last_estimator_flags_px4_ts = int(getattr(msg, "timestamp", 0))
@@ -797,16 +773,45 @@ class ROSBridge(Node):
                 getattr(msg, "heading_good_for_control", False)
             ),
         }
-        self.px4_lpos = np.array([msg.x, msg.y, msg.z], dtype=np.float32)
-        self.px4_vel = np.array([msg.vx, msg.vy, msg.vz], dtype=np.float32)
-        self._px4_vel_ready = True
+        # pos/vel now sourced from _odom_cb (VehicleOdometry); validity flags kept here
 
     def _odom_cb(self, msg):
-        # angular_velocity is FRD body frame (rad/s); NaN when EKF not ready
+        self._last_odom_wall = time.monotonic()
+
+        # angular_velocity: FRD body frame (rad/s)
         raw = np.array(msg.angular_velocity, dtype=np.float32)
-        if np.any(np.isnan(raw)):
-            return  # keep last known-good value
-        self.angular_velocity = raw
+        if not np.any(np.isnan(raw)):
+            self.angular_velocity = raw
+
+        # position: NED frame (pose_frame=1=NED expected from EKF2)
+        pos = np.array(msg.position, dtype=np.float32)
+        if not np.any(np.isnan(pos)):
+            self.px4_lpos = pos
+
+        # velocity: NED frame (velocity_frame=1=NED); skip if body-FRD (3) — getters expect NED
+        vel_frame = int(getattr(msg, "velocity_frame", 1))
+        if vel_frame != 3:  # 3 = VELOCITY_FRAME_BODY_FRD
+            vel = np.array(msg.velocity, dtype=np.float32)
+            if not np.any(np.isnan(vel)):
+                self.px4_vel = vel
+                self._px4_vel_ready = True
+
+        # quaternion: FRD→NED; first elem NaN = EKF not ready, keep last good value
+        q_raw = msg.q
+        if not math.isnan(float(q_raw[0])):
+            w, x, y, z = float(q_raw[0]), float(q_raw[1]), float(q_raw[2]), float(q_raw[3])
+            self.ekf_q = np.array([w, x, y, z], dtype=np.float32)
+
+            sinr_cosp = 2.0 * (w * x + y * z)
+            cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
+            self.roll = math.atan2(sinr_cosp, cosr_cosp)
+
+            sinp = 2.0 * (w * y - z * x)
+            self.pitch = math.copysign(math.pi / 2.0, sinp) if abs(sinp) >= 1.0 else math.asin(sinp)
+
+            siny_cosp = 2.0 * (w * z + x * y)
+            cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+            self.yaw = math.atan2(siny_cosp, cosy_cosp)
 
     def _global_pos_cb(self, msg):
         self.current_amsl_alt = msg.alt
@@ -1547,14 +1552,13 @@ class ROSBridge(Node):
         self.lidar_raw = np.clip(ranges, 0.1, 30.0)
 
     def get_quaternion(self) -> np.ndarray:
-        with self._gz_lock:
-            q = np.array(self.gz_quat, dtype=np.float32)  # [w, x, y, z] ENU/FLU
+        q = self.ekf_q.copy()  # [w, x, y, z] FRD→NED (EKF estimate, not Gazebo GT)
         if q[0] < 0.0:
             q = -q  # canonical form: qw >= 0 (q and -q represent same rotation)
         return q
 
     def get_lidar_scan(self) -> np.ndarray:
-        return self.lidar_raw.copy()  # (1080,) float32, range [0.1, 30.0] m
+        return self.lidar_raw.copy()  # (180,) float32, range [0.1, 30.0] m
 
     def is_flipped(self):
         roll_deg = abs(math.degrees(self.roll))
@@ -1615,6 +1619,12 @@ class ROSBridge(Node):
         with self._ros_pub_lock:
             self.offboard_pub.publish(om)
             self.trajectory_pub.publish(tp)
+
+    def set_wind(self, wx: float, wy: float, wz: float = 0.0) -> bool:
+        """Set global wind velocity (ENU m/s) via Gazebo Transport. No-op if unavailable."""
+        if self.gz_client is None or not self.gz_client.available():
+            return False
+        return self.gz_client.set_wind(self.world_name, wx, wy, wz)
 
     def send_position_setpoint_ned(self, x, y, z, yaw=math.nan):
         """
@@ -1815,11 +1825,17 @@ class ROSBridge(Node):
                 return False
 
         # 3. ARM (Dùng force=True vì môi trường RL không có tín hiệu RC)
+        # Resend arm every 0.3s — PX4 may return TEMPORARILY_REJECTED on first attempt
+        # (EKF init/reset cascade briefly flashes local_position_invalid), so we keep retrying.
         if not self.is_armed:
-            self.arm(force=True)
+            arm_last_sent = 0.0
             t0 = time.monotonic()
             armed_ok = False
-            while time.monotonic() - t0 < 2.0:
+            while time.monotonic() - t0 < 2.5:
+                now = time.monotonic()
+                if now - arm_last_sent >= 0.3:
+                    self.arm(force=True)
+                    arm_last_sent = now
                 self.send_velocity(0.0, 0.0, 1.5, 0.0)
                 self._spin_once()
                 if self.is_armed:

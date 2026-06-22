@@ -12,19 +12,22 @@ class DepthStateExtractor(BaseFeaturesExtractor):
         - "depth" : (3, H, W)  — ảnh depth / stereo từ camera
         - "state" : (22,)      — state vector đã normalize
 
-    State vector layout (22 chiều):
+    State vector layout (31 chiều):
         [0:3]   vel FLU norm          (vx, vy, vz body)
         [3:6]   ang_vel FLU norm      (roll_rate, pitch_rate, yaw_rate)
         [6]     altitude norm
         [7:10]  goal body-FLU norm    (gx, gy, gz)
         [10:14] orientation           (sin_yaw, cos_yaw, pitch/45°, roll/45°)
-        [14:18] last action           (vx, vy, vz, yaw_rate)
-        [18:22] fence dist body-FLU   (forward, back, left, right)
+        [14:18] last action A_t       (vx, vy, vz, yaw_rate) in [-1,1]
+        [18:22] delta_A1 = A_t - A_{t-1}   kinematic velocity, clip/2 → [-1,1]
+        [22:26] delta_A2 = ΔA1_t - ΔA1_{t-1}  kinematic accel,  clip/2 → [-1,1]
+        [26:30] fence dist body-FLU   (forward, back, left, right)
+        [30]    DFA progress          q/N ∈ [0,1]
 
     Flow:
         depth → CNN → Linear+SiLU(3136→256) ────────────────────┐
                                                                 cat(320) → fusion_fc → LayerNorm → features
-        state(22) → Linear+SiLU(22→64) → Linear+SiLU(64→64) ───┘
+        state(31) → Linear+SiLU(31→64) → Linear+SiLU(64→64) ───┘
     """
 
     def __init__(self, observation_space, features_dim: int = 256):
@@ -36,8 +39,8 @@ class DepthStateExtractor(BaseFeaturesExtractor):
         assert depth_channels == 3, (
             f"Expects depth channels=3, got {depth_channels}"
         )
-        assert n_state == 23, (
-            f"Expects state dim=23, got {n_state}"
+        assert n_state == 31, (
+            f"Expects state dim=31, got {n_state}"
         )
 
         # ── Nhánh CNN (depth) ──────────────────────────────────────────────

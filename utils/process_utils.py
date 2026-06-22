@@ -170,7 +170,7 @@ def start_gz_depth_bridge(
     ros_domain_id: int,
 ) -> subprocess.Popen:
     """
-    Bridge Gazebo depth camera sang ROS 2 Image topic.
+    Bridge Gazebo depth_camera sang ROS 2 Image topic.
 
     Gazebo publish:  /depth_camera  (gz.msgs.Image)
     ROS 2 receive:   /camera/depth/image_raw  (sensor_msgs/msg/Image)

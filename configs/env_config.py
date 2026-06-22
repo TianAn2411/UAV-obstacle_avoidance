@@ -7,21 +7,48 @@ class EnvConfig:
     depth_shape: tuple = (3, 84, 84)       # depth obs: 3 stacked 84x84 frames
     depth_min: float = 0.0
     depth_max: float = 10.0
-    state_dim: int = 23   # 3 vel + 3 ang_vel + 1 alt + 3 goal + 4 orientation(sin_yaw,cos_yaw,pitch_n,roll_n) + 4 last_action + 4 fence_flu + 1 dfa_progress
+    state_dim: int = 31   # 3 vel + 3 ang_vel + 1 alt + 3 goal + 4 orientation + 4 last_action + 4 delta_A1 + 4 delta_A2 + 4 fence_flu + 1 dfa_progress
     action_dim: int = 4                    # [vx, vy, vz, yaw_rate]
     # Sim-to-real observation noise: x_noisy = x + N(0, σ²), applied in
     # train_manager.py:_build_state_vector — only the policy observation is noised,
     # GT position is still used for rewards/collision/fence. 0.0 = disabled.
-    lidar_num_sectors: int = 36        # angular sectors across 270° sweep (7.5° each)
+    lidar_num_sectors: int = 36        # angular sectors across 45° sweep (1.25° each)
     lidar_min_range: float = 0.1       # clip floor (m) — also used for signal-error fill
     lidar_max_range: float = 30.0      # clip ceiling (m)
     goal_xy_norm: float = 20.0         # normalizer for body-frame goal xy (m) — > goal_dist_high_end to cover drone drift
     goal_z_norm: float = 8.0           # normalizer for body-frame goal z (m) — matches fence_z_max
-    obs_noise_pos_std: float = 0.0    # σ position (m)   — real VIO/GPS: 0.1–0.3
-    obs_noise_vel_std: float = 0.0    # σ velocity (m/s) — real EKF:     0.05–0.15
-    obs_noise_yaw_std: float = 0.0    # σ yaw (rad)      — real IMU:     0.02–0.08
-    obs_noise_ang_vel_std: float = 0.0  # σ angular rate (rad/s) — real IMU gyro: 0.005–0.02
-    obs_noise_quat_std: float = 0.0    # σ quaternion (per component, renorm) — real IMU: 0.01–0.03
+    # Sim-to-real observation noise — injected into policy obs only, NOT reward/collision GT
+    # Stage 0 (freeze_vz, no pillars): 0.0 — drone học bay cơ bản, không cần nhiễu
+    # Stage 1 (no pillars):            nhỏ — pos=0.05, vel=0.03, yaw=0.01, ang_vel=0.005, quat=0.005
+    # Stage 2+ (có cột):               trung — pos=0.10, vel=0.05, yaw=0.02, ang_vel=0.008, quat=0.010
+    # Stage 4–5 (nhiều cột, full sim-to-real): pos=0.15, vel=0.08, yaw=0.03, ang_vel=0.012, quat=0.015
+    obs_noise_pos_std: float = 0.0      # σ position (m)                — real VIO/GPS: 0.1–0.3
+    obs_noise_vel_std: float = 0.0      # σ velocity (m/s)              — real EKF:     0.05–0.15
+    obs_noise_yaw_std: float = 0.0      # σ yaw (rad)                   — real IMU:     0.02–0.08
+    obs_noise_ang_vel_std: float = 0.0  # σ angular rate (rad/s)        — real IMU gyro: 0.005–0.02
+    obs_noise_quat_std: float = 0.0     # σ quaternion per-component + renorm — real IMU: 0.01–0.03
+
+    # Sim-to-real action randomization
+    # Stage 0:   action_noise_std=0.0, action_delay_steps=0 — không nhiễu, học hành vi sạch
+    # Stage 1:   action_noise_std=0.02, action_delay_steps=0 — nhiễu nhẹ, chưa cần delay
+    # Stage 2–3: action_noise_std=0.03, action_delay_steps=1 — thêm 1-step delay (50ms)
+    # Stage 4–5: action_noise_std=0.05, action_delay_steps=1 — full sim-to-real, gần thực tế nhất
+    # Ghi chú: action_noise_std đơn vị m/s (vx/vy/vz) và rad/s (yaw_rate) — scale theo vx_limit
+    action_noise_std: float = 0.0       # σ actuator noise added to sent cmd — real ESC jitter: 0.02–0.05
+    action_delay_steps: int = 0         # steps to delay execution — real total latency ~1 step (50ms)
+
+    # Per-episode domain randomisation
+    # mass_scale: uniform in [min, max] each episode — models mass/motor/battery variation
+    #   1.0 = no randomisation; <1 = heavier (less effective); >1 = lighter
+    #   Stage 0-1: disabled (1.0, 1.0) — learn clean dynamics first
+    #   Stage 2-3: ±5-8% — mild uncertainty
+    #   Stage 4-5: ±10% — full sim-to-real (Kaufmann 2023 used ±15%)
+    mass_scale_min: float = 1.0
+    mass_scale_max: float = 1.0
+    # wind_speed_max: max horizontal wind speed (m/s) sampled uniform per episode
+    #   0.0 = disabled; direction random ENU; wz=0 (horizontal only)
+    #   Stage 0-1: 0.0; Stage 2: 0.5; Stage 3: 1.0; Stage 4-5: 2.0
+    wind_speed_max: float = 0.0
 
     # Mission geometry
     start: list = field(default_factory=lambda: [0.0, 0.0, 0.0])
@@ -36,7 +63,7 @@ class EnvConfig:
     # Goal sampling ramp (annulus inner/outer edge over training steps)
     goal_dist_low_start: float = 8.0
     goal_dist_low_end: float = 16.0
-    goal_dist_high_start: float = 10.0
+    goal_dist_high_start: float = 13.0
     goal_dist_high_end: float = 16.0
     goal_dist_ramp_steps: int = 350_000
     goal_dist_ramp_min_band: float = 2.0   # minimum annulus width during ramp phase
@@ -99,7 +126,7 @@ class EnvConfig:
     lift_vz: float = 1.5
 
     # Reset — rescue (from old drone_env.py L78)
-    rescue_margin_m: float = 6.2
+    rescue_margin_m: float = 10.0
     rescue_jitter_m: float = 3.0   # random XY offset added to rescue target to break same-position loops
 
     # Reset — pre-episode yaw alignment (from old drone_env.py L640-650)

@@ -32,6 +32,10 @@ docs/
 .vscode/
 .understand-anything/
 ppo_drone_stage*.zip
-./codegraph
+.codegraph/
 ./tests
 *_PLAN.md
+*.gv
+*.pkl
+*.pdf
+*.zip

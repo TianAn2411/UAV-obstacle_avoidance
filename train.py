@@ -13,7 +13,7 @@ import yaml
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.vec_env import SubprocVecEnv
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize
 
 from obstacle_avoidance.configs.env_config import EnvConfig
 from obstacle_avoidance.configs.pillar_config import PillarConfig
@@ -33,7 +33,8 @@ from obstacle_avoidance.utils.process_utils import (
     start_gz_depth_bridge,
     start_gz_lidar_bridge,
     start_gz_pose_bridge,
-    start_microxrce_agent,
+    start_microxrce_agent_single,
+    stop_bridge_process,
 )
 from obstacle_avoidance.utils.px4_manager import PX4InstanceManager
 
@@ -62,9 +63,10 @@ def make_env(
     env_log_dir: str | None = None,
     stage_conf: dict | None = None,
     machine_cfg: dict | None = None,
+    start_step: int = 0,
 ) -> Callable:
     def _init():
-        # 1. Thread limits — old L992-998
+        #1. Thread limits — old L992-998
         os.environ["OMP_NUM_THREADS"] = "1"
         os.environ["OPENBLAS_NUM_THREADS"] = "1"
         os.environ["MKL_NUM_THREADS"] = "1"
@@ -73,7 +75,6 @@ def make_env(
         cv2.setNumThreads(0)
 
         ros_domain = 30 + rank
-        uxrce_port = 8888 + rank
         partition = f"drone_rl_{rank}"
 
         # Stagger startup: each rank gets its own Gazebo instance.
@@ -140,8 +141,8 @@ def make_env(
         env_vars["PX4_SIM_MODEL"] = "gz_x500_depth"
         env_vars["PX4_GZ_WORLD"] = world_name
 
-        env_vars["PX4_UXRCE_DDS_PORT"] = str(uxrce_port)
-        env_vars["UXRCE_DDS_PORT"] = str(uxrce_port)
+        # PX4_UXRCE_DDS_PORT NOT set — all instances connect to port 8888 (shared agent).
+        # PX4 rcS distinguishes clients via UXRCE_DDS_KEY = px4_instance+1 (from -i N).
 
         env_vars["PX4_GZ_MODEL_POSE"] = "0,0,0,0,0,0"
 
@@ -150,12 +151,9 @@ def make_env(
             f"ROS_DOMAIN_ID={ros_domain}, "
             f"PX4_INSTANCE={rank}, "
             f"GZ_PARTITION={partition}, "
-            f"UXRCE_PORT={uxrce_port}, "
+            f"UXRCE_PORT=8888(shared), "
             f"HEADLESS={headless}"
         )
-
-        # 4. Per-rank MicroXRCE agent
-        xrce_proc = start_microxrce_agent(rank, ros_domain)
 
         model_name = f"x500_depth_{rank}"
         bridge_processes = []
@@ -250,14 +248,14 @@ def make_env(
             px4_ns=px4_ns,
             target_system=rank + 1,
             gz_partition=partition,
-            xrce_proc=xrce_proc,
+            xrce_proc=None,  # shared agent managed by run_training()
         )
 
         spawner = make_spawner(
             world=world_name,
             gz_partition=partition,
         )
-
+        
         # 8. Construct DroneObstacleEnv — old L1176-1197
         ecfg = EnvConfig()
         _ecfg_fields = {f.name for f in dataclasses.fields(EnvConfig)}
@@ -276,7 +274,7 @@ def make_env(
             os.makedirs(rank_log_dir, exist_ok=True)
         else:
             rank_log_dir = None
-        env = DroneObstacleEnv(bridge, spawner, ecfg, rcfg, pcfg, env_id=rank, log_dir=rank_log_dir)
+        env = DroneObstacleEnv(bridge, spawner, ecfg, rcfg, pcfg, env_id=rank, log_dir=rank_log_dir, start_step=start_step)
 
         # 9. Wrap with Monitor — old L1199
         env = Monitor(env)
@@ -334,6 +332,8 @@ def run_training(stage: int = 1) -> None:
         f"ppo_drone_stage{stage - 1}_final.zip",
     )
     interrupted_save_path = os.path.join(project_root, f"{model_prefix}_interrupted")
+    vecnorm_path = os.path.join(project_root, f"{model_prefix}_vecnormalize.pkl")
+    vecnorm_interrupted_path = os.path.join(project_root, f"{model_prefix}_vecnormalize_interrupted.pkl")
 
     latest_ckpt = find_latest_checkpoint(ckpt_dir, f"stage{stage}")
 
@@ -444,11 +444,42 @@ def run_training(stage: int = 1) -> None:
         except OSError as e:
             logger.warning(f"[MAIN AFFINITY] sched_setaffinity failed: {e}")
 
+    # --- Single shared MicroXRCEAgent for ALL PX4 instances ---
+    # One agent on port 8888 handles N instances via unique UXRCE_DDS_KEY (px4_instance+1).
+    # Each PX4 still has its own ROS_DOMAIN_ID + namespace — full topic isolation preserved.
+    xrce_agent = start_microxrce_agent_single(port=8888)
+    logger.info(f"[UXRCE] shared agent started port=8888 pid={xrce_agent.pid}")
+
     # --- Build vectorised env ---
-    env = SubprocVecEnv([
-        make_env(i, conf["num_pillars"], stage, f"stage{stage}", n_envs, env_log_dir, stage_conf=conf, machine_cfg=machine_cfg)
+    raw_env = SubprocVecEnv([
+        make_env(i, conf["num_pillars"], stage, f"stage{stage}", n_envs, env_log_dir, stage_conf=conf, machine_cfg=machine_cfg, start_step=resume_timesteps)
         for i in range(n_envs)
     ])
+    # VecNormalize load path mirrors model resume priority — ret_rms must match the loaded model.
+    # CheckpointCallback(save_vecnormalize=True) saves to {ckpt_dir}/{prefix}_{steps}_steps_vecnormalize.pkl.
+    _vn_load_path: str | None = None
+    if os.path.exists(interrupted_model_path):
+        if os.path.exists(vecnorm_interrupted_path):
+            _vn_load_path = vecnorm_interrupted_path
+    elif latest_ckpt is not None:
+        _ckpt_base = os.path.basename(latest_ckpt)           # "stage0_44626_steps.zip"
+        _ckpt_dir_p = os.path.dirname(latest_ckpt)
+        _parts = _ckpt_base.split("_", 1)                    # ["stage0", "44626_steps.zip"]
+        _vn_name = f"{_parts[0]}_vecnormalize_{_parts[1].replace('.zip', '.pkl')}"
+        _ckpt_vn = os.path.join(_ckpt_dir_p, _vn_name)      # "stage0_vecnormalize_44626_steps.pkl"
+        if os.path.exists(_ckpt_vn):
+            _vn_load_path = _ckpt_vn
+    elif os.path.exists(final_model_path):
+        if os.path.exists(vecnorm_path):
+            _vn_load_path = vecnorm_path
+    # stage-transfer and fresh: use fresh stats — new stage has different reward landscape
+
+    if _vn_load_path is not None:
+        env = VecNormalize.load(_vn_load_path, raw_env)
+        logger.info(f"[VECNORM] loaded stats from {_vn_load_path}")
+    else:
+        env = VecNormalize(raw_env, norm_obs=False, norm_reward=True, clip_reward=10.0, gamma=ppo_cfg.get("gamma", 0.99))
+        logger.info("[VECNORM] fresh stats")
 
     # --- Policy kwargs ---
     policy_kwargs = dict(
@@ -530,6 +561,11 @@ def run_training(stage: int = 1) -> None:
     # --- CNN freeze (stage 0/1: no pillars, train state MLP only) ---
     freeze_cnn = bool(conf.get("freeze_cnn", False))
     extractor = model.policy.features_extractor
+    _state_fc0 = extractor.state_fc[0]
+    logger.info(
+        f"[MODEL] state_fc[0]: Linear({_state_fc0.in_features}, {_state_fc0.out_features}) "
+        f"— state_dim={'✓ 31' if _state_fc0.in_features == 31 else f'⚠ {_state_fc0.in_features} (expected 31)'}"
+    )
     for name, param in extractor.named_parameters():
         if name.startswith("cnn"):  # covers cnn.* and cnn_fc.*
             param.requires_grad = not freeze_cnn
@@ -580,6 +616,7 @@ def run_training(stage: int = 1) -> None:
         save_freq=max(check_freq // n_envs, 1),
         save_path=ckpt_dir,
         name_prefix=f"stage{stage}",
+        save_vecnormalize=True,
     )
     monitor_callback = TrainingMonitor(
         check_freq=check_freq,
@@ -594,6 +631,7 @@ def run_training(stage: int = 1) -> None:
     def save_interrupted_model(reason: str) -> None:
         try:
             model.save(interrupted_save_path)
+            env.save(vecnorm_interrupted_path)
             logger.info(
                 f"[TRAIN SAVE] interrupted reason={reason} path={interrupted_save_path}.zip"
             )
@@ -619,6 +657,7 @@ def run_training(stage: int = 1) -> None:
             reset_num_timesteps=False,
         )
         model.save(os.path.join(project_root, f"{model_prefix}_final"))
+        env.save(vecnorm_path)
         logger.info(
             f"[TRAIN DONE] saved final model: "
             f"{os.path.join(project_root, model_prefix + '_final')}.zip"
@@ -637,6 +676,11 @@ def run_training(stage: int = 1) -> None:
             env.close()
         except BaseException as close_exc:
             logger.warning(f"[ENV CLOSE] {type(close_exc).__name__}: {close_exc}")
+        try:
+            stop_bridge_process(xrce_agent)
+            logger.info("[UXRCE] shared agent stopped")
+        except BaseException as agent_exc:
+            logger.warning(f"[UXRCE CLOSE] {type(agent_exc).__name__}: {agent_exc}")
 
 
 def main() -> None:

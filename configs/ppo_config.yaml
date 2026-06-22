@@ -7,7 +7,7 @@ seed: 42
 n_steps: 1024
 batch_size: 128
 n_epochs: 10
-learning_rate: 3.0e-4
+learning_rate: 1.0e-4
 gamma: 0.99
 gae_lambda: 0.95
 clip_range: 0.2
@@ -32,51 +32,93 @@ curriculum:
   - stage: 0
     num_pillars: 0
     min_steps: 500_000
-    freeze_vz: true             # horizontal nav only — vz locked to 0
+    freeze_vz: false             # horizontal nav only — vz locked to 0
     freeze_cnn: true             # no pillars — CNN branch frozen, train state MLP only
-    obs_noise_vel_std: 0.0
-    obs_noise_ang_vel_std: 0.0
+    # Stage 0: zero noise — drone học hành vi cơ bản, nhiễu sẽ cản trở hội tụ
     obs_noise_pos_std: 0.0
+    obs_noise_vel_std: 0.0
     obs_noise_yaw_std: 0.0
+    obs_noise_ang_vel_std: 0.0
+    obs_noise_quat_std: 0.0
+    action_noise_std: 0.0
+    action_delay_steps: 0
+    mass_scale_min: 1.0          # no mass randomisation — clean dynamics
+    mass_scale_max: 1.0
+    wind_speed_max: 0.0          # no wind
 
   - stage: 1
     num_pillars: 0
     min_steps: 500_000
     freeze_vz: false             # vz unlocked — full altitude control
     freeze_cnn: true             # no pillars — CNN branch frozen, train state MLP only
-    obs_noise_vel_std: 0.0
-    obs_noise_ang_vel_std: 0.0
-    obs_noise_pos_std: 0.0
-    obs_noise_yaw_std: 0.0
+    # Stage 1: nhiễu obs rất nhỏ, chưa có action noise/delay — vz mới mở, cần ổn định trước
+    obs_noise_pos_std: 0.05
+    obs_noise_vel_std: 0.03
+    obs_noise_yaw_std: 0.01
+    obs_noise_ang_vel_std: 0.005
+    obs_noise_quat_std: 0.005
+    action_noise_std: 0.02
+    action_delay_steps: 0
+    mass_scale_min: 1.0          # no mass randomisation — altitude control cần ổn định trước
+    mass_scale_max: 1.0
+    wind_speed_max: 0.0          # no wind
 
   - stage: 2
     num_pillars: 3
     min_steps: 500_000
-    obs_noise_vel_std: 0.02
-    obs_noise_ang_vel_std: 0.002
-    obs_noise_pos_std: 0.05
-    obs_noise_yaw_std: 0.01
+    # Stage 2: thêm 1-step action delay + bắt đầu mass/wind nhẹ
+    obs_noise_pos_std: 0.08
+    obs_noise_vel_std: 0.04
+    obs_noise_yaw_std: 0.015
+    obs_noise_ang_vel_std: 0.007
+    obs_noise_quat_std: 0.008
+    action_noise_std: 0.03
+    action_delay_steps: 1
+    mass_scale_min: 0.95         # ±5% mass variation
+    mass_scale_max: 1.05
+    wind_speed_max: 0.5          # up to 0.5 m/s wind
 
   - stage: 3
     num_pillars: 5
     min_steps: 500_000
-    obs_noise_vel_std: 0.04
-    obs_noise_ang_vel_std: 0.004
-    obs_noise_pos_std: 0.1
+    # Stage 3: tăng dần — drone phải né cột trong điều kiện sensor nhiễu + latency + wind
+    obs_noise_pos_std: 0.10
+    obs_noise_vel_std: 0.05
     obs_noise_yaw_std: 0.02
+    obs_noise_ang_vel_std: 0.010
+    obs_noise_quat_std: 0.010
+    action_noise_std: 0.04
+    action_delay_steps: 1
+    mass_scale_min: 0.92         # ±8% mass variation
+    mass_scale_max: 1.08
+    wind_speed_max: 1.0          # up to 1.0 m/s wind
 
   - stage: 4
     num_pillars: 10
     min_steps: 500_000
-    obs_noise_vel_std: 0.05
-    obs_noise_ang_vel_std: 0.005
+    # Stage 4: gần thực tế — ESC jitter + VIO drift + delay + mass + wind đồng thời
     obs_noise_pos_std: 0.15
-    obs_noise_yaw_std: 0.03
+    obs_noise_vel_std: 0.07
+    obs_noise_yaw_std: 0.025
+    obs_noise_ang_vel_std: 0.012
+    obs_noise_quat_std: 0.012
+    action_noise_std: 0.05
+    action_delay_steps: 1
+    mass_scale_min: 0.90         # ±10% mass variation (Kaufmann 2023: ±15%)
+    mass_scale_max: 1.10
+    wind_speed_max: 2.0          # up to 2.0 m/s wind
 
   - stage: 5
     num_pillars: 20
     min_steps: 0
-    obs_noise_vel_std: 0.0525
-    obs_noise_ang_vel_std: 0.00525
-    obs_noise_pos_std: 0.1525
-    obs_noise_yaw_std: 0.0325
+    # Stage 5: full sim-to-real — giữ nguyên stage 4
+    obs_noise_pos_std: 0.15
+    obs_noise_vel_std: 0.07
+    obs_noise_yaw_std: 0.025
+    obs_noise_ang_vel_std: 0.012
+    obs_noise_quat_std: 0.012
+    action_noise_std: 0.05
+    action_delay_steps: 1
+    mass_scale_min: 0.90
+    mass_scale_max: 1.10
+    wind_speed_max: 2.0

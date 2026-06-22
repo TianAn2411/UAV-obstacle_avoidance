@@ -647,25 +647,34 @@ class PillarManager:
         self._stage1_near_rewarded = [False] * len(self._stage1_sgs_xy)
 
     def _update_stage1_subgoals(self, pos_xy: np.ndarray) -> float:
-        """Check current subgoal, award near/reach rewards, advance index. Returns reward."""
-        if not self._stage1_sgs_xy or self._stage1_idx >= len(self._stage1_sgs_xy):
+        """Count all waypoints drone has passed (by circle or longitudinal projection).
+        dfa_q = number reached — no sequential dependency, can't get stuck."""
+        if not self._stage1_sgs_xy:
             return 0.0
 
-        r      = self._r
+        r   = self._r
+        pos = np.asarray(pos_xy, dtype=np.float32)
+
+        corridor = self._episode_goal_xy - self._episode_start_xy
+        corridor_dir = corridor / (float(np.linalg.norm(corridor)) + 1e-8)
+        pos_proj = float(np.dot(pos - self._episode_start_xy, corridor_dir))
+
         reward = 0.0
-        i      = self._stage1_idx
-        sg_xy  = self._stage1_sgs_xy[i]
-        d      = float(np.linalg.norm(np.asarray(pos_xy, dtype=np.float32) - sg_xy))
+        for i, sg_xy in enumerate(self._stage1_sgs_xy):
+            d = float(np.linalg.norm(pos - sg_xy))
 
-        if not self._stage1_near_rewarded[i] and d <= r.stage1_subgoal_near_radius:
-            self._stage1_near_rewarded[i] = True
-            reward += r.stage1_subgoal_near_reward * self._stage1_reward_scale
+            if not self._stage1_near_rewarded[i] and d <= r.stage1_subgoal_near_radius:
+                self._stage1_near_rewarded[i] = True
+                reward += r.stage1_subgoal_near_reward * self._stage1_reward_scale
 
-        if d <= r.stage1_subgoal_reach_radius:
-            self._stage1_reached[i] = True
-            reward += r.stage1_subgoal_reach_reward * self._stage1_reward_scale
-            self._stage1_idx = min(len(self._stage1_sgs_xy), self._stage1_idx + 1)
+            if not self._stage1_reached[i]:
+                sg_proj = float(np.dot(sg_xy - self._episode_start_xy, corridor_dir))
+                if d <= r.stage1_subgoal_reach_radius or pos_proj >= sg_proj:
+                    self._stage1_reached[i] = True
+                    if d <= r.stage1_subgoal_reach_radius:
+                        reward += r.stage1_subgoal_reach_reward * self._stage1_reward_scale
 
+        self._stage1_idx = sum(self._stage1_reached)
         return reward
     def _get_active_bypass_subgoal(self) -> Optional[np.ndarray]:
         if not self._bypass_sgs_xy:

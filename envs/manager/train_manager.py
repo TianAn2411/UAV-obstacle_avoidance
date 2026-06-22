@@ -11,6 +11,7 @@ from obstacle_avoidance.configs.pillar_config import PillarConfig
 from obstacle_avoidance.configs.reward_config import RewardConfig
 from obstacle_avoidance.envs.manager.action_manager import ActionManager, ActionOutput
 from obstacle_avoidance.envs.manager.logging_manager import LoggingManager
+from obstacle_avoidance.envs.manager.noise_manager import NoiseManager
 from obstacle_avoidance.envs.manager.pillar_manager import PillarManager, PillarSnapshot
 from obstacle_avoidance.envs.manager.reset_manager import ResetManager, ResetDecision
 from obstacle_avoidance.envs.manager.reward_manager import RewardManager, StepState, RewardComponents
@@ -41,6 +42,7 @@ class TrainManager:
         pcfg: PillarConfig,
         env_id: int = 0,
         log_dir=None,
+        start_step: int = 0,
     ) -> None:
         self.bridge = bridge
         self.ecfg = ecfg
@@ -55,7 +57,7 @@ class TrainManager:
 
         # Episode state
         self._step_count: int = 0
-        self._global_step: int = 0
+        self._global_step: int = int(start_step)
         self._goal_xy_radius: float = float(ecfg.goal_xy_radius_schedule_values[0])
         self._last_goal_xy_radius_logged: Optional[float] = None
 
@@ -69,6 +71,9 @@ class TrainManager:
         self._prev_dist_xy: float = 0.0
         self._ep_dist_start: float = 0.0
         self._prev_action: np.ndarray = np.zeros(4, dtype=np.float32)
+        self._prev_smoothed_action_n: np.ndarray = np.zeros(4, dtype=np.float32)
+        self._prev_prev_smoothed_action_n: np.ndarray = np.zeros(4, dtype=np.float32)
+        self._prev_delta_a1: np.ndarray = np.zeros(4, dtype=np.float32)
 
         # Depth stack
         self._depth_history: deque = deque(maxlen=ecfg.depth_stack_size)
@@ -82,6 +87,9 @@ class TrainManager:
 
         # Airborne tracking for reward manager
         self._has_been_airborne: bool = False
+
+        # All sim-to-real noise: obs noise, action delay/noise, mass scale, wind
+        self._noise_manager = NoiseManager(ecfg, self._np_random)
 
         # DFA state (P-NSRL)
         self._dfa_q: int = 0       # current DFA state index
@@ -179,6 +187,16 @@ class TrainManager:
             self._reset_manager.pre_episode_auto_yaw_to_goal(self._goal)
             self._pillar_manager.reset_episode(self._start, self._goal)
 
+        # If armed but still below 1m after reset (e.g. continuous reset landed low),
+        # climb to safe altitude before episode begins.
+        _pos_pre = self.bridge.get_gazebo_position()
+        if (
+            getattr(self.bridge, "is_armed", False)
+            and np.all(np.isfinite(_pos_pre))
+            and float(_pos_pre[2]) < 1.0
+        ):
+            self._pre_episode_climb_if_low(_pos_pre)
+
         # Common finalize
         self._action_manager.reset(
             hold_alt=self.ecfg.freeze_vz_hold_alt if self.ecfg.freeze_vz else None
@@ -202,6 +220,10 @@ class TrainManager:
         self._prev_pos = synced_pos.copy() if np.all(np.isfinite(synced_pos)) else self._start.copy()
         self._prev_dist_xy = float(np.linalg.norm(self._goal[:2] - self._prev_pos[:2]))
         self._prev_action = np.zeros(4, dtype=np.float32)
+        self._prev_smoothed_action_n = np.zeros(4, dtype=np.float32)
+        self._prev_prev_smoothed_action_n = np.zeros(4, dtype=np.float32)
+        self._prev_delta_a1 = np.zeros(4, dtype=np.float32)
+        self._noise_manager.reset_episode(self.bridge)
         self._has_been_airborne = bool(float(synced_pos[2]) > self.ecfg.airborne_z)
         self._last_done_reason = None
 
@@ -290,8 +312,14 @@ class TrainManager:
             num_pillars=self._pillar_manager._p.num_pillars,
         )
 
-        # 2. Send velocity and tick
-        self.bridge.send_velocity(action_out.vx, action_out.vy, action_out.vz, action_out.yaw_rate)
+        # 2. Domain randomisation pipeline → send velocity and tick
+        computed_cmd = np.array(
+            [action_out.vx, action_out.vy, action_out.vz, action_out.yaw_rate], dtype=np.float32
+        )
+        # mass scale + delay buffer + ESC noise; delayed_cmd goes into state[14:18]
+        delayed_cmd, sent_cmd = self._noise_manager.step_action(computed_cmd)
+
+        self.bridge.send_velocity(sent_cmd[0], sent_cmd[1], sent_cmd[2], sent_cmd[3])
         self.bridge.tick(self.ecfg.dt)
 
         if not self.bridge.is_px4_callbacks_healthy(max_est_flags_age=5.0):
@@ -378,7 +406,7 @@ class TrainManager:
             action=np.asarray(raw_action, dtype=np.float32),
             step_count=self._step_count,
             global_step=self._global_step,
-            stage_index=1 if self._pillar_manager._p.num_pillars == 0 else 2,
+            stage_index=(0 if self.ecfg.freeze_vz else (1 if self._pillar_manager._p.num_pillars == 0 else 2)),
             dist_xy=dist_xy,
             prev_dist_xy=self._prev_dist_xy,
             front_depth=front_depth,
@@ -434,6 +462,12 @@ class TrainManager:
         self._prev_pos = pos.copy()
         self._prev_dist_xy = dist_xy
         self._prev_action = np.asarray(raw_action, dtype=np.float32)
+        # State vector [14:18] = cmd actually sent to PX4 this step (delayed, pre-noise).
+        # With delay=N: delayed_cmd = computed_cmd_{t-N} — what drone executed this step.
+        # ESC noise is unobservable on real hardware → store pre-noise, not sent_cmd.
+        _vz_delayed_norm = self.ecfg.vz_up_limit if delayed_cmd[2] >= 0 else self.ecfg.vz_down_limit
+        _ao_limits = np.array([self.ecfg.vx_limit, self.ecfg.vy_limit, _vz_delayed_norm, self.ecfg.yaw_rate_limit], dtype=np.float32)
+        self._prev_smoothed_action_n = np.clip(delayed_cmd / _ao_limits, -1.0, 1.0)
         self._step_count += 1
         self._global_step += 1
 
@@ -554,12 +588,32 @@ class TrainManager:
         target_radius = float(e.goal_xy_radius_schedule_values[idx])
         self._goal_xy_radius = target_radius
 
+    def _pre_episode_climb_if_low(self, pos_now: np.ndarray) -> None:
+        """Climb to safe altitude if armed and below 1m at episode start. Timeout 6s.
+        When freeze_vz active, target = band_low + 0.3 (inside the protected band).
+        """
+        target_z = (self.ecfg.freeze_vz_band_low + 0.3) if self.ecfg.freeze_vz else 1.5
+        timeout = 6.0
+        t0 = time.monotonic()
+        self.logger.info(
+            f"[RESET] pre_episode_climb env={self.env_id} "
+            f"z={float(pos_now[2]):.2f}m → climbing to {target_z}m"
+        )
+        while time.monotonic() - t0 < timeout:
+            pos = self.bridge.get_gazebo_position()
+            if not np.all(np.isfinite(pos)) or float(pos[2]) >= target_z:
+                break
+            self.bridge.send_velocity(0.0, 0.0, self.ecfg.takeoff_assist_vz, 0.0)
+            self.bridge.tick(self.ecfg.dt)
+        self.bridge.send_velocity(0.0, 0.0, 0.0, 0.0)
+        self.bridge.tick(self.ecfg.dt)
+
     # ------------------------------------------------------------------ #
     # Observation / depth processing                                      #
     # ------------------------------------------------------------------ #
 
     def _build_obs(self, depth_frame: np.ndarray, ekf_pos: np.ndarray, vel: np.ndarray, yaw: float, ang_vel: np.ndarray) -> dict:
-        """Push depth frame (meters) to rolling stack and build 18-dim state vector."""
+        """Push depth frame (meters) to rolling stack and build 23-dim state vector."""
         if not self._depth_history or len(self._depth_history) == 0:
             self._reset_depth_history()
         self._depth_history.append(depth_frame.copy())
@@ -583,29 +637,28 @@ class TrainManager:
         ang_vel: np.ndarray,
     ) -> np.ndarray:
         """
-        22-dim ego-centric state vector (all from EKF/IMU, no GT leaks).
+        31-dim ego-centric state vector (all from EKF/IMU, no GT leaks).
         Layout:
           [0:3]   linear vel  [vx, vy, vz]  FLU  (+noise)
           [3:6]   angular vel [rx, py, yaw_r]  FLU  (+noise)
           [6]     altitude z  ENU            (+noise)
           [7:10]  goal in body-FLU [body_x, body_y, body_z]  (using noisy EKF pos+yaw)
           [10:14] orientation [sin_yaw, cos_yaw, pitch/45°, roll/45°]  (no sign ambiguity)
-          [14:18] last action [vx, vy, vz, yaw_rate] (in [-1,1])
-          [18:22] fence margins body-FLU [fwd, back, left, right] normalized
+          [14:18] last action A_t [vx, vy, vz, yaw_rate] (in [-1,1])
+          [18:22] delta_A1 = A_t - A_{t-1}  (kinematic velocity), clip(·/2)→[-1,1]
+          [22:26] delta_A2 = ΔA1_t - ΔA1_{t-1}  (kinematic accel), clip(·/2)→[-1,1]
+          [26:30] fence margins body-FLU [fwd, back, left, right] normalized
+          [30]    DFA progress q/N ∈ [0,1]
         """
         ekf_pos = np.asarray(ekf_pos, dtype=np.float32)
         vel     = np.asarray(vel,     dtype=np.float32)
         ang_vel = np.asarray(ang_vel, dtype=np.float32)
 
-        # Apply sensor noise (sim-to-real domain randomization)
-        if self.ecfg.obs_noise_vel_std > 0.0:
-            vel = vel + self._np_random.standard_normal(3).astype(np.float32) * self.ecfg.obs_noise_vel_std
-        if self.ecfg.obs_noise_ang_vel_std > 0.0:
-            ang_vel = ang_vel + self._np_random.standard_normal(3).astype(np.float32) * self.ecfg.obs_noise_ang_vel_std
-        if self.ecfg.obs_noise_pos_std > 0.0:
-            ekf_pos = ekf_pos + self._np_random.standard_normal(3).astype(np.float32) * self.ecfg.obs_noise_pos_std
-        if self.ecfg.obs_noise_yaw_std > 0.0:
-            yaw = float(yaw) + float(self._np_random.standard_normal()) * self.ecfg.obs_noise_yaw_std
+        # Fetch quaternion here so all obs noise is applied together below
+        quat = self.bridge.get_quaternion()
+        vel, ang_vel, ekf_pos, yaw, quat = self._noise_manager.apply_obs_noise(
+            vel, ang_vel, ekf_pos, yaw, quat
+        )
 
         # Body-frame goal vector (no GT — uses noisy EKF pos + yaw)
         rel_goal = (self._goal[:3] - ekf_pos[:3]).astype(np.float32)
@@ -628,8 +681,10 @@ class TrainManager:
             -float(ang_vel[2])
         ], dtype=np.float32)
 
-        # Normalize to roughly [-1, 1] using known physical bounds
-        vel_flu_n = vel_flu / np.array([self.ecfg.vx_limit, self.ecfg.vy_limit, self.ecfg.vz_up_limit], dtype=np.float32)
+        # Normalize to roughly [-1, 1] using known physical bounds.
+        # vz uses asymmetric limits: vz_up_limit for climb, vz_down_limit for descent.
+        _vz_vel_norm = self.ecfg.vz_up_limit if vel_flu[2] >= 0 else self.ecfg.vz_down_limit
+        vel_flu_n = vel_flu / np.array([self.ecfg.vx_limit, self.ecfg.vy_limit, _vz_vel_norm], dtype=np.float32)
         ang_vel_flu_n = ang_vel_flu / np.array([math.pi, math.pi, self.ecfg.yaw_rate_limit], dtype=np.float32)
         alt_n = float(ekf_pos[2]) / self.ecfg.fence_z_max
         goal_n = np.array([
@@ -639,11 +694,7 @@ class TrainManager:
         ], dtype=np.float32)
 
         # Orientation as [sin_yaw, cos_yaw, pitch_n, roll_n] — no quaternion sign ambiguity
-        # (q and -q same rotation but policy saw discontinuous flip; Euler avoids this)
-        quat = self.bridge.get_quaternion()  # [qw, qx, qy, qz], used only to extract pitch/roll
-        if self.ecfg.obs_noise_quat_std > 0.0:
-            quat = quat + self._np_random.standard_normal(4).astype(np.float32) * self.ecfg.obs_noise_quat_std
-            quat /= np.linalg.norm(quat)
+        # quat already fetched + noised above via apply_obs_noise
         qw, qx, qy, qz = float(quat[0]), float(quat[1]), float(quat[2]), float(quat[3])
         pitch = math.asin(max(-1.0, min(1.0, 2.0 * (qw * qy - qz * qx))))
         roll  = math.atan2(2.0 * (qw * qx + qy * qz), 1.0 - 2.0 * (qx * qx + qy * qy))
@@ -655,35 +706,55 @@ class TrainManager:
             roll  / _MAX_TILT,
         ], dtype=np.float32)
 
-        # Last action — raw policy output, already in [-1, 1]
-        last_action = self._prev_action.copy()
+        # [14:18] A_t — smoothed cmd actually sent to drone, normalized to [-1, 1]
+        last_action = self._prev_smoothed_action_n.copy()
 
-        # Fence distances: true ray-cast distance to each axis-aligned wall in body-FLU frame.
-        # For each body direction (dx_enu, dy_enu), find smallest positive t s.t. pos+t*dir hits a wall.
+        # [18:22] delta_A1 = A_t - A_{t-1}  (kinematic velocity of command)
+        delta_a1 = last_action - self._prev_prev_smoothed_action_n
+        delta_a1_norm = np.clip(delta_a1 / 2.0, -1.0, 1.0)
+
+        # [22:26] delta_A2 = ΔA1_t - ΔA1_{t-1}  (kinematic accel of command)
+        # Uses self._prev_delta_a1 stored from PREVIOUS step before rolling
+        delta_a2 = delta_a1 - self._prev_delta_a1
+        delta_a2_norm = np.clip(delta_a2 / 2.0, -1.0, 1.0)
+
+        # Roll kinematic buffers AFTER computing both deltas
+        self._prev_delta_a1 = delta_a1.copy()
+        self._prev_prev_smoothed_action_n = last_action.copy()
+
+        # Fence proximity sensor — sparse warning in body-FLU frame.
+        # Uses signed wall distances so virtual fence exits are handled correctly:
+        # d < 0 means drone already crossed that wall → clamp warning to 1.0.
         px, py = float(ekf_pos[0]), float(ekf_pos[1])
         _fx_min = float(self.ecfg.fence_x_min)
         _fx_max = float(self.ecfg.fence_x_max)
         _fy_min = float(self.ecfg.fence_y_min)
         _fy_max = float(self.ecfg.fence_y_max)
-        _NORM = (_fx_max - _fx_min) / 2
+        _WARNING_ZONE = 2.0  # metres — sensor active inside this distance from wall
 
-        def _ray_dist(dx: float, dy: float) -> float:
-            d = math.inf
-            if abs(dx) > 1e-6:
-                t = (_fx_max - px) / dx if dx > 0 else (_fx_min - px) / dx
-                if t > 0:
-                    d = min(d, t)
-            if abs(dy) > 1e-6:
-                t = (_fy_max - py) / dy if dy > 0 else (_fy_min - py) / dy
-                if t > 0:
-                    d = min(d, t)
-            return d
+        _d_xp = _fx_max - px   # positive when inside +x wall, negative when past it
+        _d_xn = px - _fx_min   # positive when inside -x wall
+        _d_yp = _fy_max - py
+        _d_yn = py - _fy_min
+
+        def _fence_warn(dx: float, dy: float) -> float:
+            dists = []
+            if dx > 1e-6:
+                dists.append(_d_xp / dx)
+            elif dx < -1e-6:
+                dists.append(_d_xn / (-dx))
+            if dy > 1e-6:
+                dists.append(_d_yp / dy)
+            elif dy < -1e-6:
+                dists.append(_d_yn / (-dy))
+            d = min(dists) if dists else math.inf
+            return max(0.0, min(1.0, (_WARNING_ZONE - d) / _WARNING_ZONE))
 
         fence_flu_n = np.array([
-            min(_ray_dist( cy,  sy), 2.0 * _NORM) / _NORM,  # forward
-            min(_ray_dist(-cy, -sy), 2.0 * _NORM) / _NORM,  # back
-            min(_ray_dist(-sy,  cy), 2.0 * _NORM) / _NORM,  # left
-            min(_ray_dist( sy, -cy), 2.0 * _NORM) / _NORM,  # right
+            _fence_warn( cy,  sy),  # forward
+            _fence_warn(-cy, -sy),  # back
+            _fence_warn(-sy,  cy),  # left
+            _fence_warn( sy, -cy),  # right
         ], dtype=np.float32)
 
         dfa_progress = np.array(
@@ -692,17 +763,22 @@ class TrainManager:
         )
 
         state = np.concatenate([
-            vel_flu_n,
-            ang_vel_flu_n,
-            np.array([alt_n], dtype=np.float32),
-            goal_n,
-            orientation,
-            last_action,
-            fence_flu_n,
-            dfa_progress,   # [22] ∈ [0.0, 1.0]
+            vel_flu_n,                                  # [0:3]
+            ang_vel_flu_n,                              # [3:6]
+            np.array([alt_n], dtype=np.float32),        # [6]
+            goal_n,                                     # [7:10]
+            orientation,                                # [10:14]
+            last_action,                                # [14:18]
+            delta_a1_norm,                              # [18:22] kinematic vel
+            delta_a2_norm,                              # [22:26] kinematic accel
+            fence_flu_n,                                # [26:30]
+            dfa_progress,                               # [30] ∈ [0.0, 1.0]
         ]).astype(np.float32)
 
-        assert state.shape == (23,), f"state.shape expected (23,), got {state.shape}"
+        state[0:6]   = np.clip(state[0:6],   -1.0, 1.0)   # vel + ang_vel
+        state[7:10]  = np.clip(state[7:10],  -3.0, 3.0)   # goal_n
+        state[12:14] = np.clip(state[12:14], -1.0, 1.0)   # pitch/roll
+        assert state.shape == (31,), f"state.shape expected (31,), got {state.shape}"
         return state
 
     def _normalize_depth_frame(self, depth: np.ndarray) -> np.ndarray:
@@ -747,9 +823,9 @@ class TrainManager:
 
     def _compute_lidar_sector_features(self, lidar_scan: np.ndarray) -> np.ndarray:
         """
-        Divide 270° LiDAR sweep (1080 samples) into N angular sectors, return min range per sector.
-        Scan index 0 = -135° (hard left), index 1079 = +135° (hard right).
-        sector_width = 270° / N  (e.g. N=36 → 7.5° per sector, 30 samples each).
+        Divide 45° LiDAR sweep (180 samples) into N angular sectors, return min range per sector.
+        Scan index 0 = -22.5° (hard left), index 179 = +22.5° (hard right).
+        sector_width = 45° / N  (e.g. N=36 → 1.25° per sector, 5 samples each).
         Bad values must already be handled upstream in _lidar_cb before reaching here.
         """
         n = self.ecfg.lidar_num_sectors          # default 36

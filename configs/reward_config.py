@@ -77,7 +77,7 @@ class RewardConfig:
     # Suboptimal altitude penalty — lighter than below_min
     # Penalizes alt_min to alt_suboptimal_low_thresh (e.g., 2.0-2.5m: allowed but inefficient)
     # Example: z=2.2m → -0.7 * (2.5-2.2) = -0.21/step
-    alt_suboptimal_low_thresh: float = 2.5  # below this = suboptimal (but above alt_min)
+    alt_suboptimal_low_thresh: float = 2.0  # below this = suboptimal — aligned with freeze_vz_band_low
     alt_suboptimal_low_coef: float = -0.7   # stronger push out of low zone
 
     # ------------------------------------------------------------------ #
@@ -95,7 +95,7 @@ class RewardConfig:
     # Example stage1: perfectly aligned (yaw_error=0) → 0.20*1.0 + 0.40 = +0.60/step
     # Example stage1: 90° off (cos=0)                 → 0.20*0.0 - 1.23 = -1.23/step
     # backwards_yaw_penalty triggers when flying fast while facing away.
-    stage1_face_goal_coef: float = 0.00
+    stage1_face_goal_coef: float = 0.025
     stage1_backwards_yaw_penalty_coef: float = 0.05
     stage1_backwards_yaw_speed_gate: float = 0.5   # min speed (m/s) to trigger (0.5)
 
@@ -112,7 +112,7 @@ class RewardConfig:
     #   cos=0.00 (90°)  → -2.5 * 0.98/1.98 = -1.24 penalty
     #   cos=-1.0 (180°) → -3.5 penalty (max)
     stage1_yaw_good_thresh: float = 0.92       # cos threshold ≈ 36.8° — above = bonus, below = penalty
-    stage1_yaw_forward_bonus_coef: float = 0.25   # max bonus at perfect alignment (cos=1.0)
+    stage1_yaw_forward_bonus_coef: float = 0.10   # max bonus at perfect alignment (cos=1.0)
     stage1_yaw_forward_penalty_coef: float = 0.25  # max penalty at full misalignment (cos=-1.0)
 
     # Stage2+ (with pillars): looser thresh=0.9275 ≈ yaw_error < 21.9° for bonus

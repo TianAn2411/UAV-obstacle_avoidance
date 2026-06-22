@@ -18,6 +18,7 @@ class DroneObstacleEnv(gym.Env):
         pcfg: PillarConfig = None,
         env_id: int = 0,
         log_dir: str | None = None,
+        start_step: int = 0,
     ):
         super().__init__()
         ecfg = ecfg or EnvConfig()
@@ -33,7 +34,7 @@ class DroneObstacleEnv(gym.Env):
         })
         self.action_space = spaces.Box(-1.0, 1.0, shape=(ecfg.action_dim,), dtype=np.float32)
 
-        self._manager = TrainManager(bridge, spawner, ecfg, rcfg, pcfg, env_id=env_id, log_dir=log_dir)
+        self._manager = TrainManager(bridge, spawner, ecfg, rcfg, pcfg, env_id=env_id, log_dir=log_dir, start_step=start_step)
 
     def reset(self, seed=None, options=None):
         return self._manager.reset()

@@ -47,12 +47,13 @@ class ResetManager:
         base = self._classify_reset_action(reason)
 
         if base == "continuous":
-            if reason in {"fell_to_ground", "ground", "flipped"}:
-                # Drone is already on ground — no teleport or EKF re-notify needed.
-                # Inside fence: rearm + takeoff (startup_arm). Near fence: hard reset to teleport first.
+            if reason in {"ground", "flipped"}:
+                # Drone is on ground/flipped — needs rearm + takeoff.
+                # Inside fence: startup_arm. Near fence: hard reset to teleport first.
                 if fence_margin < self.ecfg.continuous_reset_fence_margin_thresh:
                     return ResetDecision(mode="hard", reason=reason, do_respawn_pillars=True)
                 return ResetDecision(mode="startup_arm", reason=reason, do_respawn_pillars=True)
+            # fell_to_ground: drone still airborne (~0.5m), still armed — continuous + post-reset climb
             if fence_margin < self.ecfg.continuous_reset_fence_margin_thresh:
                 return ResetDecision(mode="rescue_then_continuous", reason=reason, do_respawn_pillars=True)
             # Upgrade to multi_env_fast if eligible
@@ -747,6 +748,19 @@ class ResetManager:
                 self.logger.warning("[STARTUP ARM] gz_pose_ready never True after 15s, proceeding anyway")
                 break
             self._idle_spin(duration=0.1)
+
+        # Wait for failure_detector to clear (active after crash/fell_to_ground).
+        # FD blocks arm with TEMPORARILY_REJECTED until drone is disarmed + stable.
+        fd_status = int(getattr(self.bridge, "failure_detector_status", 0))
+        if fd_status != 0:
+            self.logger.warning(
+                f"[STARTUP ARM] failure_detector_status={fd_status} — waiting 4s for FD to clear"
+            )
+            self._idle_spin(duration=4.0)
+
+        # Wait for EKF to converge before arming (VIO init cascade resets local_position_valid).
+        # Returns quickly if already converged; up to 8s on cold start.
+        self._wait_for_ekf_convergence(timeout=8.0, stable_hits_required=3)
 
         arm_ok = self._arm_with_startup_retry(
             start=start,

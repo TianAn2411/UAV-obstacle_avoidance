@@ -1,0 +1,6 @@
+[submodule "Symbolic-Extractor"]
+	path = Symbolic-Extractor
+	url = git@github.com:TianAn2411/Symbolic-Extractor.git
+[submodule "symbolic_extractor"]
+	path = symbolic_extractor
+	url = git@github.com:TianAn2411/Symbolic-Extractor.git

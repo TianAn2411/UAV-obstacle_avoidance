@@ -241,6 +241,15 @@ def make_env(
         # 7. Build bridge via make_bridge(...), spawner via make_spawner(...) — old L1148-1162
         px4_ns = "" if rank == 0 else f"/px4_{rank}"
 
+        # 7a. EnvConfig — needed by bridge for use_symbolic_extractor flag
+        ecfg = EnvConfig()
+        _ecfg_fields = {f.name for f in dataclasses.fields(EnvConfig)}
+        for key, val in (stage_conf or {}).items():
+            if key in _ecfg_fields:
+                setattr(ecfg, key, val)
+
+        logger.info(f"[RANK {rank}] use_symbolic_extractor={ecfg.use_symbolic_extractor}")
+
         bridge = make_bridge(
             gazebo_port=1134 + rank,
             world=world_name,
@@ -249,19 +258,15 @@ def make_env(
             target_system=rank + 1,
             gz_partition=partition,
             xrce_proc=None,  # shared agent managed by run_training()
+            env_config=ecfg,
         )
 
         spawner = make_spawner(
             world=world_name,
             gz_partition=partition,
         )
-        
+
         # 8. Construct DroneObstacleEnv — old L1176-1197
-        ecfg = EnvConfig()
-        _ecfg_fields = {f.name for f in dataclasses.fields(EnvConfig)}
-        for key, val in (stage_conf or {}).items():
-            if key in _ecfg_fields:
-                setattr(ecfg, key, val)
         rcfg = RewardConfig()
         pcfg = PillarConfig(num_pillars=num_pillars)
 
@@ -350,7 +355,7 @@ def run_training(stage: int = 1) -> None:
         resume_source = latest_ckpt
     elif os.path.exists(final_model_path):
         resume_source = final_model_path
-    elif stage > 1 and os.path.exists(prev_final_model_path):
+    elif stage > 0 and os.path.exists(prev_final_model_path):
         resume_source = prev_final_model_path
 
     # --- Probe resume timesteps ---
@@ -371,7 +376,7 @@ def run_training(stage: int = 1) -> None:
 
     # --- Stage start step (for monitor / curriculum accounting) ---
     stage_start_step = load_stage_start_step(ckpt_dir, stage)
-    if stage > 1 and stage_start_step == 0:
+    if stage > 0 and stage_start_step == 0:
         # No metadata yet: try to infer from previous stage's final model
         if os.path.exists(prev_final_model_path):
             try:
@@ -472,14 +477,28 @@ def run_training(stage: int = 1) -> None:
     elif os.path.exists(final_model_path):
         if os.path.exists(vecnorm_path):
             _vn_load_path = vecnorm_path
-    # stage-transfer and fresh: use fresh stats — new stage has different reward landscape
+    elif stage > 0 and os.path.exists(prev_final_model_path):
+        # Stage transfer: load prev stage ret_rms — base reward scale (time/altitude/progress)
+        # is identical across stages; only pillar rewards are added. Starting from calibrated
+        # ret_rms avoids cold-start scaling error for first few thousand steps.
+        prev_vecnorm_path = os.path.join(project_root, f"ppo_drone_stage{stage - 1}_vecnormalize.pkl")
+        if os.path.exists(prev_vecnorm_path):
+            _vn_load_path = prev_vecnorm_path
+
+    # --- Terminal banner: resume sources ---
+    _ckpt_label = resume_source if resume_source else "FRESH (no checkpoint)"
+    _vn_label   = _vn_load_path  if _vn_load_path  else "FRESH (no pkl)"
+    print("\n" + "=" * 70)
+    print(f"  [STAGE {stage}] CHECKPOINT  : {_ckpt_label}")
+    print(f"  [STAGE {stage}] VECNORMALIZE: {_vn_label}")
+    print("=" * 70 + "\n")
 
     if _vn_load_path is not None:
         env = VecNormalize.load(_vn_load_path, raw_env)
         logger.info(f"[VECNORM] loaded stats from {_vn_load_path}")
     else:
         env = VecNormalize(raw_env, norm_obs=False, norm_reward=True, clip_reward=10.0, gamma=ppo_cfg.get("gamma", 0.99))
-        logger.info("[VECNORM] fresh stats")
+        logger.info("[VECNORM] fresh stats (no prior pkl found)")
 
     # --- Policy kwargs ---
     policy_kwargs = dict(
@@ -538,7 +557,7 @@ def run_training(stage: int = 1) -> None:
         logger.info(f"[MODEL LOAD] loaded_num_timesteps={int(getattr(model, 'num_timesteps', -1))}")
         _log_ppo_params(model)
 
-    elif stage > 1 and os.path.exists(prev_final_model_path):
+    elif stage > 0 and os.path.exists(prev_final_model_path):
         _log_model_load(prev_final_model_path, f"Stage-transfer: stage {stage - 1} -> {stage} (lr=1e-4)")
         model = PPO.load(prev_final_model_path, env=env, **_ppo_override_kwargs)
         logger.info(f"[MODEL LOAD] loaded_num_timesteps={int(getattr(model, 'num_timesteps', -1))}")
@@ -574,22 +593,24 @@ def run_training(stage: int = 1) -> None:
 
     # --- Per-group LR: CNN cold-start transition ---
     # Fires when the previous stage froze CNN but this stage unfreezes it.
-    # CNN is cold-init relative to state_fc which has 500k+ steps of training.
-    # Give CNN full LR, keep state_fc at 10% to preserve learned nav behavior.
+    # Scales read from ppo_config.yaml (cnn_coldstart_*_lr_scale).
     _prev_conf = next((e for e in ppo_cfg["curriculum"] if e["stage"] == stage - 1), None)
     _prev_freeze_cnn = bool(_prev_conf.get("freeze_cnn", False)) if _prev_conf else False
     if not freeze_cnn and _prev_freeze_cnn:
         _base_lr = float(ppo_cfg["learning_rate"])
+        _s_cnn    = float(ppo_cfg.get("cnn_coldstart_cnn_lr_scale",    1.0))
+        _s_state  = float(ppo_cfg.get("cnn_coldstart_state_lr_scale",  0.1))
+        _s_fusion = float(ppo_cfg.get("cnn_coldstart_fusion_lr_scale", 0.33))
         _ext = model.policy.features_extractor
         _pg_lrs = [
-            (_ext.cnn.parameters(),                    _base_lr),
-            (_ext.cnn_fc.parameters(),                 _base_lr),
-            (_ext.state_fc.parameters(),               _base_lr * 0.1),
-            (_ext.fusion_fc.parameters(),              _base_lr / 3),
-            (_ext.fusion_norm.parameters(),            _base_lr / 3),
-            (model.policy.mlp_extractor.parameters(),  _base_lr / 3),
-            (model.policy.action_net.parameters(),     _base_lr / 3),
-            (model.policy.value_net.parameters(),      _base_lr / 3),
+            (_ext.cnn.parameters(),                    _base_lr * _s_cnn),
+            (_ext.cnn_fc.parameters(),                 _base_lr * _s_cnn),
+            (_ext.state_fc.parameters(),               _base_lr * _s_state),
+            (_ext.fusion_fc.parameters(),              _base_lr * _s_fusion),
+            (_ext.fusion_norm.parameters(),            _base_lr * _s_fusion),
+            (model.policy.mlp_extractor.parameters(),  _base_lr * _s_fusion),
+            (model.policy.action_net.parameters(),     _base_lr * _s_fusion),
+            (model.policy.value_net.parameters(),      _base_lr * _s_fusion),
         ]
         model.policy.optimizer = torch.optim.Adam(
             [{"params": p, "lr": lr, "initial_lr": lr} for p, lr in _pg_lrs],
@@ -607,8 +628,9 @@ def run_training(stage: int = 1) -> None:
         model._update_learning_rate = _types.MethodType(_patched_update_lr, model)
         logger.info(
             f"[CNN COLD-START] per-group LR override: "
-            f"cnn/cnn_fc={_base_lr:.2e} | state_fc={_base_lr * 0.1:.2e} | "
-            f"fusion/mlp/heads={_base_lr / 3:.2e}"
+            f"cnn/cnn_fc={_base_lr * _s_cnn:.2e} (×{_s_cnn}) | "
+            f"state_fc={_base_lr * _s_state:.2e} (×{_s_state}) | "
+            f"fusion/mlp/heads={_base_lr * _s_fusion:.2e} (×{_s_fusion})"
         )
 
     # --- Callbacks ---
@@ -650,9 +672,16 @@ def run_training(stage: int = 1) -> None:
 
     try:
         model.tensorboard_log = log_dir
-        
+
+        steps_done_in_stage = resume_timesteps - stage_start_step
+        remaining_steps = max(int(conf["min_steps"]) - steps_done_in_stage, 0)
+        logger.info(
+            f"[TRAIN STEPS] stage_start={stage_start_step} resume={resume_timesteps} "
+            f"done_in_stage={steps_done_in_stage} min_steps={conf['min_steps']} remaining={remaining_steps}"
+        )
+
         model.learn(
-            total_timesteps=conf["min_steps"],
+            total_timesteps=remaining_steps,
             callback=[ckpt_callback, monitor_callback],
             reset_num_timesteps=False,
         )

@@ -8,6 +8,62 @@ n_steps: 1024
 batch_size: 128
 n_epochs: 10
 learning_rate: 1.0e-4
+
+# ── CNN cold-start per-group LR ────────────────────────────────────────────────
+# Chỉ kích hoạt 1 lần khi chuyển stage freeze_cnn→pillar (stage 1→2).
+# Công thức: LR_nhánh = scale × learning_rate (1e-4)
+#
+# ── cnn_coldstart_cnn_lr_scale  (CNN + cnn_fc) ──────────────────────────────
+#   CNN bị frozen suốt stage 0-1 → weights lạnh, cần học nhanh để "thức dậy".
+#   Default 1.0 → LR = 1e-4 (full).
+#
+#   Dấu hiệu scale QUÁ CAO (> 1.0):
+#     • 10–30k bước đầu stage 2: reward sụp mạnh rồi mới phục hồi
+#     • drone quay vòng hoặc mất hướng goal hoàn toàn trong ~10k bước đầu
+#     → Giảm xuống 0.5 (thử trước), rồi 0.3 nếu vẫn còn
+#
+#   Dấu hiệu scale QUÁ THẤP (< 0.3):
+#     • Sau 150k+ bước stage 2 drone vẫn bay thẳng vào cột (BEV không có tác dụng)
+#     • episode length không giảm dù đã lâu
+#     → Tăng lên 1.0 (default)
+#
+cnn_coldstart_cnn_lr_scale: 1.0     # CNN+cnn_fc:  1.0 × 1e-4 = 1e-4  | range gợi ý: 0.3–1.0
+
+# ── cnn_coldstart_state_lr_scale  (state_fc) ────────────────────────────────
+#   state_fc đã encode nav policy (vel/goal/yaw) qua 500k bước stage 1.
+#   Giữ LR thấp để tránh gradient từ CNN rác làm hỏng motion policy vừa học.
+#   Default 0.1 → LR = 1e-5 (chậm hơn CNN 10×).
+#
+#   Dấu hiệu scale QUÁ CAO (> 0.2):
+#     • 20–50k bước đầu stage 2: drone không còn bay về hướng goal
+#       (yaw_align reward giảm mạnh so với cuối stage 1)
+#     • drone hover tại chỗ hoặc quay ngẫu nhiên
+#     → Giảm xuống 0.05
+#
+#   Dấu hiệu scale QUÁ THẤP (< 0.05):
+#     • state_fc không thể adapt với context mới (drone bay vào fence nhiều hơn stage 1)
+#     • improvement rất chậm dù CNN đã học tốt BEV (reward CNN-related tăng nhưng total không tăng)
+#     → Tăng lên 0.1 (default)
+#
+cnn_coldstart_state_lr_scale: 0.1   # state_fc:    0.1 × 1e-4 = 1e-5  | range gợi ý: 0.05–0.2
+
+# ── cnn_coldstart_fusion_lr_scale  (fusion_fc + fusion_norm + mlp + actor + critic) ──
+#   Fusion gate kết nối CNN output (256) + state output (64) → features.
+#   Heads (actor/critic) ngồi trên fusion → LR quá cao → critic value estimate
+#   không ổn định → PPO clip không đủ → policy gradient nhiễu.
+#   Default 0.33 → LR ≈ 3.3e-5 (giữa CNN và state_fc).
+#
+#   Dấu hiệu scale QUÁ CAO (> 0.5):
+#     • value_loss tăng vọt trong 10–20k bước đầu stage 2 (critic overfit noise)
+#     • entropy collapse sớm (< 20k bước): policy bị deterministic quá sớm
+#     → Giảm xuống 0.1
+#
+#   Dấu hiệu scale QUÁ THẤP (< 0.1):
+#     • Policy improvement chậm dù CNN+state_fc đã học tốt
+#     • actor/critic heads không theo kịp feature extractor → reward plateau
+#     → Tăng lên 0.33 (default)
+#
+cnn_coldstart_fusion_lr_scale: 0.33 # fusion+heads: 0.33 × 1e-4 ≈ 3.3e-5 | range gợi ý: 0.1–0.5
 gamma: 0.99
 gae_lambda: 0.95
 clip_range: 0.2
@@ -31,9 +87,10 @@ checkpoint_freq: 10_000
 curriculum:
   - stage: 0
     num_pillars: 0
-    min_steps: 500_000
+    min_steps: 295_000
     freeze_vz: false             # horizontal nav only — vz locked to 0
     freeze_cnn: true             # no pillars — CNN branch frozen, train state MLP only
+    use_symbolic_extractor: true # 3-channel kinematic BEV (default False = 1-channel depth)
     # Stage 0: zero noise — drone học hành vi cơ bản, nhiễu sẽ cản trở hội tụ
     obs_noise_pos_std: 0.0
     obs_noise_vel_std: 0.0
@@ -51,6 +108,7 @@ curriculum:
     min_steps: 500_000
     freeze_vz: false             # vz unlocked — full altitude control
     freeze_cnn: true             # no pillars — CNN branch frozen, train state MLP only
+    use_symbolic_extractor: true # 3-channel kinematic BEV (default False = 1-channel depth)
     # Stage 1: nhiễu obs rất nhỏ, chưa có action noise/delay — vz mới mở, cần ổn định trước
     obs_noise_pos_std: 0.05
     obs_noise_vel_std: 0.03
@@ -66,6 +124,7 @@ curriculum:
   - stage: 2
     num_pillars: 3
     min_steps: 500_000
+    use_symbolic_extractor: true # 3-channel kinematic BEV (default False = 1-channel depth)
     # Stage 2: thêm 1-step action delay + bắt đầu mass/wind nhẹ
     obs_noise_pos_std: 0.08
     obs_noise_vel_std: 0.04
@@ -81,6 +140,7 @@ curriculum:
   - stage: 3
     num_pillars: 5
     min_steps: 500_000
+    use_symbolic_extractor: true # 3-channel kinematic BEV (default False = 1-channel depth)
     # Stage 3: tăng dần — drone phải né cột trong điều kiện sensor nhiễu + latency + wind
     obs_noise_pos_std: 0.10
     obs_noise_vel_std: 0.05
@@ -96,6 +156,7 @@ curriculum:
   - stage: 4
     num_pillars: 10
     min_steps: 500_000
+    use_symbolic_extractor: true # 3-channel kinematic BEV (default False = 1-channel depth)
     # Stage 4: gần thực tế — ESC jitter + VIO drift + delay + mass + wind đồng thời
     obs_noise_pos_std: 0.15
     obs_noise_vel_std: 0.07
@@ -111,6 +172,7 @@ curriculum:
   - stage: 5
     num_pillars: 20
     min_steps: 0
+    use_symbolic_extractor: true # 3-channel kinematic BEV (default False = 1-channel depth)
     # Stage 5: full sim-to-real — giữ nguyên stage 4
     obs_noise_pos_std: 0.15
     obs_noise_vel_std: 0.07

@@ -39,3 +39,6 @@ ppo_drone_stage*.zip
 *.pkl
 *.pdf
 *.zip
+bev_diag2.py
+test*.py
+*.sh

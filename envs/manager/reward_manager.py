@@ -29,15 +29,10 @@ class RewardComponents:
     # Pillar-specific
     pillar_too_close: float = 0.0
     pillar_clearance_soft: float = 0.0
-    near_miss: float = 0.0
     collision_course: float = 0.0
-    clearance_body: float = 0.0
-    # Pillar attention / behavior
-    obstacle_slowdown: float = 0.0
-    pillar_attention: float = 0.0
+    bypass_reward: float = 0.0
+    # Pillar behavior
     post_pillar: float = 0.0
-    near_pillar_speed: float = 0.0
-    too_slow_penalty: float = 0.0
     # Terminal
     terminal: float = 0.0
     # Meta
@@ -58,8 +53,6 @@ class StepState:
     stage_index: int
     dist_xy: float
     prev_dist_xy: float
-    front_depth: float
-    depth_sector: np.ndarray               # shape (9,)
     nearest_pillar_dist: Optional[float]
     nearest_pillar_xy: Optional[np.ndarray]
     pillar_collision_snap: dict             # from PillarManager
@@ -75,7 +68,6 @@ class StepState:
     start: np.ndarray                      # episode start [x, y, z]
     num_pillars: int                       # active pillars this episode
     horizontal_speed: float               # precomputed ||vel_xy||
-    min_depth: float                       # global min depth this step
     final_yaw_rate: float                 # actual yaw rate sent to bridge
     yaw_error: float                       # wrap_pi(desired_yaw - current_yaw)
     # DFA state (P-NSRL)
@@ -94,9 +86,7 @@ class RewardManager:
         self._e = ecfg
         # Per-episode tracked state (reset by reset_episode)
         self._has_been_airborne: bool = False
-        self._prev_min_depth: float = float("inf")
         self._prev_horizontal_speed: float = 0.0
-        self._was_near_obstacle: bool = False
         self._prev_phi: float = 0.0        # Φ(s_{t-1}, q_{t-1}) for PBRS
         self._dist_norm: float = 1.0  # set per episode in reset_episode()
 
@@ -112,9 +102,7 @@ class RewardManager:
 
     def reset_episode(self, dist_start: float = 0.0, dfa_N: int = 1) -> None:
         self._has_been_airborne = False
-        self._prev_min_depth = float("inf")
         self._prev_horizontal_speed = 0.0
-        self._was_near_obstacle = False
         # Dynamic norm = dist_start → Φ=0 at start regardless of goal distance.
         # Floor 4.0 guards against near-zero dist_start on startup/edge cases.
         self._dist_norm = max(float(dist_start), 4.0)
@@ -141,8 +129,6 @@ class RewardManager:
         rm = 0.0
         if state.dfa_q > state.dfa_q_prev:
             rm += float(self._r.rm_subgoal_bonus)
-        passed_count = int(state.pillar_collision_snap.get("pillars_passed_count", 0))
-        rm += float(passed_count) * float(self._r.rm_pillar_passed_bonus)
         c.rm_bonus = rm
 
         # --- Time ---
@@ -174,31 +160,38 @@ class RewardManager:
             (
                 c.pillar_too_close,
                 c.pillar_clearance_soft,
-                c.collision_course,
-                c.clearance_body,
-                c.near_pillar_speed,
             ) = self._reward_pillar_clearance(state)
             # Danger scale: only yaw_align (progress/velocity_goal already removed)
             clearance_body = state.pillar_collision_snap.get("clearance_body", float("inf"))
             if np.isfinite(clearance_body) and clearance_body < self._r.clearance_body_safe:
                 danger_scale = max(0.0, min(1.0, clearance_body / self._r.clearance_body_safe))
                 c.yaw_align *= max(0.30, danger_scale)
-            c.near_miss = float(state.pillar_collision_snap.get("near_miss_reward", 0.0))
+            c.bypass_reward = float(state.bypass_subgoal_info.get("reward", 0.0))
+            # Approach velocity penalty: penalize speed component directed INTO nearest pillar.
+            # approach_speed = dot(vel_xy, dir_to_pillar) — zero when dodging laterally.
+            # proximity_weight = linear 0→1 as clearance drops 2m→0.
+            # Does NOT penalize lateral flight or high speed away from pillar.
+            if state.nearest_pillar_xy is not None:
+                _cb = float(state.pillar_collision_snap.get("clearance_body", float("inf")))
+                if np.isfinite(_cb) and _cb < self._r.pillar_safe_clearance:
+                    _dtp = np.asarray(state.nearest_pillar_xy[:2], dtype=np.float32) - np.asarray(state.pos[:2], dtype=np.float32)
+                    _dist2d = float(np.linalg.norm(_dtp))
+                    if _dist2d > 1e-6:
+                        _dtp = _dtp / _dist2d
+                        _approach = float(np.dot(np.asarray(state.vel[:2], dtype=np.float32), _dtp))
+                        if _approach > 0.0:
+                            _pw = max(0.0, 1.0 - _cb / self._r.pillar_safe_clearance)
+                            c.collision_course = self._r.collision_course_coef * _approach * _pw
 
         # --- Pillar behavior ---
         if obstacle_enabled:
             beh = self._reward_pillar_behavior(state)
-            c.obstacle_visibility = beh.get("visibility", 0.0)
-            c.obstacle_slowdown = beh.get("slowdown", 0.0)
-            c.pillar_attention = beh.get("attention", 0.0)
             c.post_pillar = beh.get("post_pillar", 0.0)
-            c.too_slow_penalty = beh.get("too_slow", 0.0)
 
         # --- Terminal ---
         c.terminal = self._reward_terminal(state)
 
         # --- Update tracked state ---
-        self._prev_min_depth = state.min_depth
         self._prev_horizontal_speed = state.horizontal_speed
         if float(state.pos[2]) > self._e.airborne_z:
             self._has_been_airborne = True
@@ -211,10 +204,8 @@ class RewardManager:
             + c.yaw_align
             + c.lateral + c.near_fence + c.start_zone
             + c.pillar_too_close + c.pillar_clearance_soft + c.collision_course
-            + c.clearance_body + c.near_pillar_speed
-            + c.near_miss
-            + c.obstacle_slowdown + c.pillar_attention
-            + c.post_pillar + c.too_slow_penalty
+            + c.bypass_reward
+            + c.post_pillar
             + c.terminal
         )
         return c.total, c
@@ -374,22 +365,13 @@ class RewardManager:
 
         return lateral, near_fence, start_zone
 
-    def _reward_pillar_clearance(
-        self, state: StepState
-    ) -> tuple[float, float, float, float, float]:
-        # Source: old drone_env.py L5700-5723, L5667-5699
+    def _reward_pillar_clearance(self, state: StepState):
         r = self._r
         snap = state.pillar_collision_snap
         clearance_body = snap.get("clearance_body", float("inf"))
-        heading_into = snap.get("heading_into", False)
-        d_closest = snap.get("d_closest", float("inf"))
-        t_closest = snap.get("t_closest", float("inf"))
-        collision_radius = snap.get("collision_radius", float("nan"))
-        speed_col = snap.get("speed", state.horizontal_speed)
 
         too_close = 0.0
         clearance_soft = 0.0
-        near_speed = 0.0
 
         if np.isfinite(clearance_body):
             if clearance_body < r.clearance_body_safe:
@@ -398,31 +380,8 @@ class RewardManager:
             if clearance_body < r.clearance_body_danger:
                 x = (r.clearance_body_danger - clearance_body) / max(r.clearance_body_danger, 1e-6)
                 too_close = r.clearance_danger_penalty_coef * (x ** 2)
-            if clearance_body < r.near_pillar_speed_clearance:
-                speed_excess = max(0.0, state.horizontal_speed - r.near_pillar_speed_safe)
-                proximity = (r.near_pillar_speed_clearance - clearance_body) / max(r.near_pillar_speed_clearance, 1e-6)
-                near_speed = -r.near_pillar_speed_coef * proximity * speed_excess
 
-        collision_course = 0.0
-        if (
-            heading_into
-            and np.isfinite(d_closest)
-            and np.isfinite(collision_radius)
-            and d_closest < collision_radius
-            and 0.0 < t_closest < 1.0
-        ):
-            risk = max(0.0, (collision_radius - d_closest) / max(collision_radius, 1e-6))
-            time_w = max(0.0, 1.0 - t_closest)
-            speed_w = min(max(speed_col, 0.0) / 2.0, 1.5)
-            collision_course = r.collision_course_coef * risk * time_w * speed_w
-
-        if np.isfinite(clearance_body) and clearance_body > 0.0:
-            clearance_body_reward = self._r.clearance_reward_coef * min(
-                clearance_body / self._r.clearance_body_safe, 1.0
-            )
-        else:
-            clearance_body_reward = 0.0
-        return too_close, clearance_soft, collision_course, clearance_body_reward, near_speed
+        return too_close, clearance_soft
 
     def _reward_pillar_behavior(self, state: StepState) -> dict:
         # Delegates to pre-computed attention_info from PillarManager
@@ -431,37 +390,7 @@ class RewardManager:
         out: dict = {}
         ai = state.attention_info
 
-        out["attention"] = float(ai.get("attention_reward", 0.0))
         out["post_pillar"] = float(ai.get("post_pillar_reward", 0.0))
-
-        out["visibility"] = 0.0
-
-        # Obstacle slowdown
-        slowdown = 0.0
-        speed_drop = self._prev_horizontal_speed - state.horizontal_speed
-        _goal_vec = np.asarray(state.goal[:2], dtype=np.float32) - np.asarray(state.pos[:2], dtype=np.float32)
-        _goal_dir = _goal_vec / (float(np.linalg.norm(_goal_vec)) + 1e-8)
-        _speed_toward_goal = float(np.dot(np.asarray(state.vel[:2], dtype=np.float32), _goal_dir))
-        if (
-            state.front_depth < r.stage2_obstacle_slowdown_depth_thresh
-            and (state.nearest_pillar_dist or float("inf")) < r.stage2_obstacle_slowdown_depth_thresh
-            and speed_drop > r.stage2_obstacle_slowdown_speed_drop
-            and (state.prev_dist_xy - state.dist_xy) > 0.0
-            and state.horizontal_speed > 0.4
-            and _speed_toward_goal > r.stage2_obstacle_slowdown_min_goal_speed
-        ):
-            slowdown = r.stage2_obstacle_slowdown_reward
-        out["slowdown"] = slowdown
-
-        # Too-slow penalty
-        too_slow = 0.0
-        if (
-            state.step_count > r.reward_too_slow_after_steps
-            and state.dist_xy > r.reward_too_slow_min_dist
-            and state.horizontal_speed < r.reward_too_slow_min_speed
-        ):
-            too_slow = r.reward_too_slow_coef
-        out["too_slow"] = too_slow
 
         return out
 

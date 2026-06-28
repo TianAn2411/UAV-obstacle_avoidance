@@ -39,7 +39,6 @@ class RewardConfig:
     # Reward Machine bonus — hard bonus at DFA state transitions          #
     # ------------------------------------------------------------------ #
     rm_subgoal_bonus: float = 8.0         # fired once per q → q+1 advance
-    rm_pillar_passed_bonus: float = 2.0   # fired once per pillar passed event
 
     # ------------------------------------------------------------------ #
     # Time penalty — escalating per step                                  #
@@ -113,7 +112,7 @@ class RewardConfig:
     #   cos=-1.0 (180°) → -3.5 penalty (max)
     stage1_yaw_good_thresh: float = 0.92       # cos threshold ≈ 36.8° — above = bonus, below = penalty
     stage1_yaw_forward_bonus_coef: float = 0.10   # max bonus at perfect alignment (cos=1.0)
-    stage1_yaw_forward_penalty_coef: float = 0.25  # max penalty at full misalignment (cos=-1.0)
+    stage1_yaw_forward_penalty_coef: float = 0.35  # max penalty at full misalignment (cos=-1.0)
 
     # Stage2+ (with pillars): looser thresh=0.9275 ≈ yaw_error < 21.9° for bonus
     #   cos=1.00 (0°)   → +0.20 * 1.0 = +0.20 bonus
@@ -203,8 +202,8 @@ class RewardConfig:
     # Example: pass at 1.5m clearance (between 1.2 and 2.5) → +0.20 once
     stage2_near_miss_clearance_min: float = 1.2
     stage2_near_miss_clearance_good: float = 2.5
-    stage2_near_miss_reward_good: float = 0.50
-    stage2_near_miss_reward_ok: float = 0.20
+    stage2_near_miss_reward_good: float = 0.0   # removed: redundant with rm_subgoal_bonus
+    stage2_near_miss_reward_ok: float = 0.0     # removed: redundant with rm_subgoal_bonus
 
     # ------------------------------------------------------------------ #
     # Obstacle approach penalty — per step                                #
@@ -230,8 +229,8 @@ class RewardConfig:
     # ------------------------------------------------------------------ #
     stage2_pillar_bypass_offset_m: float = 2.4
     stage2_pillar_bypass_near_radius: float = 1.2   # still used as DFA trigger radius
-    stage2_pillar_bypass_near_reward: float = 0.0       # REPLACED by rm_subgoal_bonus
-    stage2_pillar_bypass_reach_reward: float = 0.0     # REPLACED by rm_subgoal_bonus
+    stage2_pillar_bypass_near_reward: float = 3.0       # spatial pull toward safe bypass path
+    stage2_pillar_bypass_reach_reward: float = 0.0     # covered by rm_subgoal_bonus at pillar pass
 
     # ------------------------------------------------------------------ #
     # Ring subgoals — geometry kept for logging, rewards REMOVED          #
@@ -279,21 +278,10 @@ class RewardConfig:
     clearance_soft_penalty_coef: float = -1.75
     clearance_danger_penalty_coef: float = -4.0
     collision_course_coef: float = -5.25
-    clearance_reward_coef: float = 0.05  # max +0.05/step at clearance >= clearance_body_safe
+    clearance_reward_coef: float = 0.0   # removed: noise (0.05 << clearance_soft -1.75)
     near_pillar_speed_clearance: float = 0.60  # body clearance threshold to trigger speed penalty
     near_pillar_speed_safe: float = 0.70       # speed below this: no penalty
     near_pillar_speed_coef: float = 2.5        # max -2.0/step at clearance→0, speed=1.5m/s
-
-    # ------------------------------------------------------------------ #
-    # Too-slow penalty — per step, stage2+                                #
-    # ------------------------------------------------------------------ #
-    # Penalizes hovering near a pillar without making progress.
-    # Triggers after reward_too_slow_after_steps steps near a pillar.
-    # Example: stuck 1.5m from pillar for 40 steps → -0.15/step from step 35
-    reward_too_slow_after_steps: int = 35
-    reward_too_slow_min_dist: float = 1.7
-    reward_too_slow_min_speed: float = 0.7
-    reward_too_slow_coef: float = -0.15
 
     # ------------------------------------------------------------------ #
     # Pillar attention reward — per step, stage2+                         #
@@ -303,14 +291,14 @@ class RewardConfig:
     # avoidance_track: reward for tracking pillar while actively dodging.
     # Example: pillar at 3m, camera facing it (dot>0.35) → +0.03/step
     # Example: first time looking at pillar 4m away → +2.5 once
-    stage2_pillar_attention_geom_reward: float = 0.05
+    stage2_pillar_attention_geom_reward: float = 0.0   # disabled: dead code, too weak to justify wiring
     stage2_pillar_attention_geom_dot_thresh: float = 0.35
     stage2_pillar_attention_geom_min_dist: float = 1.4
     stage2_pillar_attention_geom_max_dist: float = 4.5
     stage2_pillar_attention_geom_min_progress: float = -0.10
     stage2_pillar_attention_normalize_by_count: bool = True
     stage2_pillar_attention_reference_count: int = 5
-    stage2_pillar_first_look_reward: float = 2.5
+    stage2_pillar_first_look_reward: float = 0.0   # disabled: dead code, revisit if stage2 struggles with detection
     stage2_pillar_first_look_dot_thresh: float = 0.30
     stage2_pillar_first_look_min_dist: float = 1.5
     stage2_pillar_first_look_max_dist: float = 6.0

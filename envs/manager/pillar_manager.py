@@ -64,6 +64,11 @@ class PillarManager:
         self._bypass_near_rewarded: list[bool] = []
         self._bypass_idx: int = 0
 
+        # Active corridor pillar tracking (DFA Option B)
+        self._active_corridor_pillar_names: set = set()
+        self._active_corridor_pillar_count: int = 0
+        self._corridor_avoided_count: int = 0
+
         # Ring subgoal state
         self._ring_sgs: list[dict] = []
         self._ring_claimed: dict[int, int] = {}
@@ -259,6 +264,8 @@ class PillarManager:
             state["rewarded"] = True
             state["pass_step"] = int(step_count)
             self.avoided_pillar_count += 1
+            if name in self._active_corridor_pillar_names:
+                self._corridor_avoided_count += 1
 
         clearance_improved = (
             self.prev_nearest_dist is not None
@@ -488,6 +495,8 @@ class PillarManager:
         self._bypass_reached = []
         self._bypass_near_rewarded = []
         self._bypass_idx = 0
+        self._active_corridor_pillar_names = set()
+        self._active_corridor_pillar_count = 0
 
         p = self._p
         r = self._r
@@ -514,6 +523,15 @@ class PillarManager:
                 continue
 
             cross = float(np.dot(pillar_xy - start_xy, lateral_dir))
+
+            # Active corridor pillar: within bypass_enter_radius of true corridor axis.
+            # Drone flying straight will enter this pillar's zone → meaningful for DFA.
+            if abs(cross) <= p.bypass_enter_radius:
+                name = str(m.get("name", ""))
+                if name:
+                    self._active_corridor_pillar_names.add(name)
+                    self._active_corridor_pillar_count += 1
+
             if abs(cross) > 3.5:
                 continue
 
@@ -622,9 +640,6 @@ class PillarManager:
         self._stage1_reward_scale = 1.0
 
         r = self._r
-        if self._p.num_pillars != 0:
-            return  # only for open-field stages
-
         start_xy = np.asarray(start[:2], dtype=np.float32)
         goal_xy  = np.asarray(goal[:2],  dtype=np.float32)
         dist_xy  = float(np.linalg.norm(goal_xy - start_xy))
@@ -1039,43 +1054,27 @@ class PillarManager:
         pillar_h = float(nearest_meta.get("height", p.pillar_pool_height))
         drone_r = p.drone_trigger_radius
         drone_half_h = p.drone_trigger_half_height
-        collision_margin = p.pillar_collision_margin
-        hard_overlap_margin = p.pillar_hard_overlap_margin
 
         drone_z = float(pos_arr[2])
         drone_z_min = drone_z - drone_half_h
         drone_z_max = drone_z + drone_half_h
         z_overlap = bool(drone_z_max >= 0.0 and drone_z_min <= pillar_h)
 
-        base_radius = pillar_r + drone_r
-        clearance = nearest_dist - base_radius
+        clearance = nearest_dist - (pillar_r + drone_r)
 
-        heading_into, heading_info = self._is_heading_into_pillar(
-            drone_xy=pos_arr[:2],
-            vel_xy=np.asarray(vel_xy, dtype=np.float32)[:2],
-            pillar_xy=nearest_xy,
-            pillar_radius=pillar_r,
-        )
+        if z_overlap and clearance <= p.pillar_hard_overlap_margin:
+            return True, "hard", default_heading
 
-        combined_heading: dict = {
-            "heading_into": bool(heading_into),
-            "d_closest": heading_info.get("d_closest", float("inf")),
-            "t_closest": heading_info.get("t_closest", float("nan")),
-            "speed": heading_info.get("speed", float(np.linalg.norm(vel_xy[:2]))),
-            "trigger_radius": heading_info.get("trigger_radius", base_radius + collision_margin),
+        pos_xy = np.asarray(pos[:2], dtype=np.float32)
+        pillar_xy_2d = np.asarray(nearest_xy[:2], dtype=np.float32)
+        heading_into, hinfo = self._is_heading_into_pillar(pos_xy, vel_xy, pillar_xy_2d, pillar_r)
+        return False, "none", {
+            "heading_into": heading_into,
+            "d_closest": hinfo.get("d_closest", float("inf")),
+            "t_closest": hinfo.get("t_closest", float("nan")),
+            "speed": hinfo.get("speed", float(np.linalg.norm(vel_xy[:2]))),
+            "trigger_radius": hinfo.get("trigger_radius", float("nan")),
         }
-
-        if z_overlap:
-            hard_overlap = bool(clearance <= hard_overlap_margin)
-            if hard_overlap:
-                return True, "hard", combined_heading
-
-            collision_radius = base_radius + collision_margin
-            inside_collision_margin = bool(nearest_dist <= collision_radius)
-            if inside_collision_margin and heading_into:
-                return True, "soft", combined_heading
-
-        return False, "none", combined_heading
 
     def _is_heading_into_pillar(
         self,

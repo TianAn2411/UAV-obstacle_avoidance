@@ -19,6 +19,7 @@ from utils.logger import setup_logger
 from cv_bridge import CvBridge
 import threading
 import concurrent.futures
+import queue
 
 from px4_msgs.msg import (
     OffboardControlMode,
@@ -63,6 +64,13 @@ try:
 except ImportError:
     spawn_world = None
 
+try:
+    from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
+    from geometry_msgs.msg import TransformStamped
+    _HAS_TF2 = True
+except ImportError:
+    _HAS_TF2 = False
+
 
 class NavState:
     MANUAL = 0
@@ -82,6 +90,7 @@ class ROSBridge(Node):
         px4_ns="",
         target_system=1,
         gz_partition=None,
+        env_config=None,
     ):
         super().__init__(
             f"drone_bridge_{gazebo_port}",
@@ -329,6 +338,76 @@ class ROSBridge(Node):
         self._start_ros_spin_thread()
         self._start_offboard_keepalive_thread()
         self._start_gz_pose_listener()
+
+        # ── Symbolic Extractor pipeline (inline, no subprocess) ───────────
+        self._latest_bev: np.ndarray = np.full((3, 84, 84), 1.0, dtype=np.float32)
+        self._latest_scan_msg = None
+        self._latest_odom_msg = None
+        self._use_symbolic = env_config and env_config.use_symbolic_extractor
+
+        if self._use_symbolic:
+            try:
+                from symbolic_extractor.configs import ExtractorConfig as _ExtCfg
+                from symbolic_extractor.mapping import TFManager as _TFMgr
+                from symbolic_extractor.pipeline import HALOPipeline as _HALOPipe
+                _rank = max(0, int(self.target_system) - 1)
+                _ext_cfg = _ExtCfg.for_instance(_rank)  # use default lidar_topic from ExtractorConfig
+                self._tf_manager = _TFMgr(self, _ext_cfg)
+                self._pipeline = _HALOPipe(self._tf_manager, _ext_cfg)
+                if _HAS_TF2:
+                    _stf_bc = StaticTransformBroadcaster(self)
+                    self._tf_bc = TransformBroadcaster(self)
+                    def _mk_tf(parent, child, xyz):
+                        t = TransformStamped()
+                        t.header.stamp = self.get_clock().now().to_msg()
+                        t.header.frame_id = parent
+                        t.child_frame_id = child
+                        t.transform.translation.x = float(xyz[0])
+                        t.transform.translation.y = float(xyz[1])
+                        t.transform.translation.z = float(xyz[2])
+                        t.transform.rotation.w = 1.0
+                        return t
+                    _stf_bc.sendTransform([
+                        _mk_tf("base_link", "camera_link", (0.12, 0.03, 0.242)),
+                        _mk_tf("base_link", "link",        (0.12, 0.00, 0.260)),
+                    ])
+                else:
+                    self._tf_bc = None
+                self.logger.info(f"[EXTRACTOR] pipeline ready rank={_rank}")
+            except Exception as _ex:
+                self.logger.warning(f"[EXTRACTOR] init failed, BEV will be max-range: {_ex}")
+                # Fallback: no-op pipeline
+                class _NoPipe:
+                    def process(self, *a, **kw): return np.full((3, 84, 84), 10.0, dtype=np.float32)
+                    def reset(self): pass
+                self._pipeline = _NoPipe()
+                self._tf_bc = None
+        else:
+            # Legacy mode: no symbolic_extractor, no TF broadcast, no BEV proc thread
+            class _NoPipe:
+                def process(self, *a, **kw): return np.full((3, 84, 84), 10.0, dtype=np.float32)
+                def reset(self): pass
+            self._pipeline = _NoPipe()
+            self._tf_bc = None
+            self.logger.info("[EXTRACTOR] disabled (use_symbolic_extractor=False)")
+
+        # BEV proc thread — only when symbolic enabled
+        if self._use_symbolic:
+            # offloads pipeline off executor threads to avoid VIO starvation.
+            # _depth_cb enqueues (depth, scan, odom); this thread owns pipeline.process().
+            # Queue(maxsize=2): oldest frame dropped when proc thread is busy — non-blocking.
+            self._bev_proc_stop = False
+            self._bev_proc_queue: queue.Queue = queue.Queue(maxsize=2)
+            self._bev_proc_thread = threading.Thread(
+                target=self._bev_proc_loop,
+                daemon=True,
+                name=f"BEVProc_{self.model_name}",
+            )
+            self._bev_proc_thread.start()
+        else:
+            self._bev_proc_stop = True  # no thread to stop, but set flag for close() safety
+            self._bev_proc_queue = None
+            self._bev_proc_thread = None
 
     def enable_offboard_keepalive(self, enabled=False):
         self.keepalive_enabled = bool(enabled)
@@ -591,6 +670,7 @@ class ROSBridge(Node):
         self.last_keepalive_stale_age = 0.0
         self._vo_stop = True
         self._spin_stop = True
+        self._bev_proc_stop = True
 
         if self._keepalive_thread is not None:
             try:
@@ -607,6 +687,14 @@ class ROSBridge(Node):
                     self.logger.warning("[CLOSE] vo_thread failed to join")
             except Exception as e:
                 self.logger.warning(f"[CLOSE] Error joining vo_thread: {e}")
+
+        if self._bev_proc_thread is not None:
+            try:
+                self._bev_proc_thread.join(timeout=1.0)
+                if self._bev_proc_thread.is_alive():
+                    self.logger.warning("[CLOSE] bev_proc_thread failed to join")
+            except Exception as e:
+                self.logger.warning(f"[CLOSE] Error joining bev_proc_thread: {e}")
 
         if self._spin_thread is not None:
             try:
@@ -754,6 +842,27 @@ class ROSBridge(Node):
                 (84, 84),
             ).astype(np.float32)
 
+        if self._latest_odom_msg is not None and self._use_symbolic:
+            try:
+                self._bev_proc_queue.put_nowait(
+                    (msg, self._latest_scan_msg, self._latest_odom_msg)
+                )
+            except queue.Full:
+                pass  # proc thread busy — drop frame, _depth_cb returns immediately
+
+    def _bev_proc_loop(self):
+        """Pipeline processing on dedicated thread — never blocks executor threads."""
+        while not self._bev_proc_stop:
+            try:
+                depth_msg, scan_msg, odom_msg = self._bev_proc_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            try:
+                bev = self._pipeline.process(depth_msg, scan_msg, odom_msg)
+                self._latest_bev = bev
+            except Exception as _e:
+                self.logger.debug(f"[EXTRACTOR] pipeline error: {_e}")
+
     def _local_pos_cb(self, msg):
         # Debug: log first few callbacks to verify subscription works
         if not hasattr(self, '_local_pos_cb_count'):
@@ -776,6 +885,7 @@ class ROSBridge(Node):
         # pos/vel now sourced from _odom_cb (VehicleOdometry); validity flags kept here
 
     def _odom_cb(self, msg):
+        self._latest_odom_msg = msg
         self._last_odom_wall = time.monotonic()
 
         # angular_velocity: FRD body frame (rad/s)
@@ -812,6 +922,39 @@ class ROSBridge(Node):
             siny_cosp = 2.0 * (w * z + x * y)
             cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
             self.yaw = math.atan2(siny_cosp, cosy_cosp)
+
+        # Publish odom → base_link TF (dynamic transform, 100Hz from VehicleOdometry)
+        if self._use_symbolic and self._tf_bc is not None and not np.any(np.isnan(pos)) and not math.isnan(float(q_raw[0])):
+            t = TransformStamped()
+            t.header.stamp = self.get_clock().now().to_msg()
+            t.header.frame_id = "odom"
+            t.child_frame_id = "base_link"
+            # NED position → ENU translation
+            t.transform.translation.x = float(pos[1])  # y_e → ENU x (East)
+            t.transform.translation.y = float(pos[0])  # x_n → ENU y (North)
+            t.transform.translation.z = float(-pos[2]) # -z_d → ENU z (Up)
+            # FRD→NED quaternion → FLU→ENU quaternion (matrix method, matches test script)
+            try:
+                import transforms3d.quaternions as tfq
+                q_px4 = np.array([w, x, y, z], dtype=np.float64)
+                R_frd_ned = tfq.quat2mat(q_px4)
+                # Rotation matrices from test_sym_extractor.py
+                _R_NED_FROM_ENU = np.array([[0., 1., 0.],
+                                             [1., 0., 0.],
+                                             [0., 0.,-1.]], dtype=np.float64)
+                _R_FLU_FROM_FRD = np.array([[1., 0., 0.],
+                                             [0.,-1., 0.],
+                                             [0., 0.,-1.]], dtype=np.float64)
+                R_flu_enu = _R_NED_FROM_ENU @ R_frd_ned @ _R_FLU_FROM_FRD
+                q_ros = tfq.mat2quat(R_flu_enu)
+                t.transform.rotation.w = float(q_ros[0])
+                t.transform.rotation.x = float(q_ros[1])
+                t.transform.rotation.y = float(q_ros[2])
+                t.transform.rotation.z = float(q_ros[3])
+            except ImportError:
+                # Fallback: identity rotation if transforms3d missing
+                t.transform.rotation.w = 1.0
+            self._tf_bc.sendTransform(t)
 
     def _global_pos_cb(self, msg):
         self.current_amsl_alt = msg.alt
@@ -1539,10 +1682,38 @@ class ROSBridge(Node):
             -float(self.px4_lpos[2]),  # Up    ← -NED[2]
         ], dtype=np.float32)
 
+    def get_perception(self) -> np.ndarray:
+        """Return perception tensor for policy observation.
+
+        - use_symbolic_extractor=True: (3, 84, 84) kinematic BEV [Ch0=distance, Ch1=dv, Ch2=da]
+        - use_symbolic_extractor=False: (1, 84, 84) single-channel depth (legacy)
+
+        Returns:
+            np.ndarray: (3, 84, 84) or (1, 84, 84) float32, values [0, 10] m.
+        """
+        if self._use_symbolic:
+            return self._latest_bev.copy()
+        else:
+            return np.expand_dims(self.depth_raw, axis=0)
+
+    # Deprecated: use get_perception() instead
     def get_depth_84(self):
+        """Legacy method. Returns (1, 84, 84) single-channel depth.
+        Deprecated: use get_perception() for unified depth/BEV access."""
         return np.expand_dims(self.depth_raw, axis=0)
 
+    def get_bev_tensor(self) -> np.ndarray:
+        """Return latest (3, 84, 84) float32 BEV from symbolic_extractor [0, 10] m.
+        Deprecated: use get_perception() for unified depth/BEV access."""
+        return self._latest_bev.copy()
+
+    def reset_extractor(self) -> None:
+        """Clear occupancy grid and kinematic buffer — call at episode reset."""
+        self._pipeline.reset()
+        self._latest_bev = np.full((3, 84, 84), 1.0, dtype=np.float32)
+
     def _lidar_cb(self, msg):
+        self._latest_scan_msg = msg
         ranges = np.array(msg.ranges, dtype=np.float32)
         # posinf = beam exceeded max range → clear space
         ranges[np.isposinf(ranges)] = 30.0
@@ -2782,6 +2953,7 @@ def make_bridge(
     target_system=1,
     gz_partition=None,
     xrce_proc=None,
+    env_config=None,
 ):
     if not rclpy.ok():
         rclpy.init()
@@ -2793,6 +2965,7 @@ def make_bridge(
         px4_ns=px4_ns,
         target_system=target_system,
         gz_partition=gz_partition,
+        env_config=env_config,
     )
     bridge._xrce_proc = xrce_proc
     return bridge

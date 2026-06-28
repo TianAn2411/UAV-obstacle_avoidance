@@ -5,8 +5,9 @@ from dataclasses import dataclass, field
 class EnvConfig:
     # Observation / action
     depth_shape: tuple = (3, 84, 84)       # depth obs: 3 stacked 84x84 frames
-    depth_min: float = 0.0
-    depth_max: float = 10.0
+    depth_min: float = -1.0   # Ch1/Ch2 (delta_v, delta_a) are signed [-1, 1]
+    depth_max: float = 1.0    # Ch0 (EDT distance) normalized to [0, 1]
+    bev_max_range_m: float = 10.0  # physical range for Ch0 de-normalization; must match ExtractorConfig.max_depth_range
     state_dim: int = 31   # 3 vel + 3 ang_vel + 1 alt + 3 goal + 4 orientation + 4 last_action + 4 delta_A1 + 4 delta_A2 + 4 fence_flu + 1 dfa_progress
     action_dim: int = 4                    # [vx, vy, vz, yaw_rate]
     # Sim-to-real observation noise: x_noisy = x + N(0, σ²), applied in
@@ -81,12 +82,15 @@ class EnvConfig:
     vy_limit: float = 1.8
     vz_up_limit: float = 1.2
     vz_down_limit: float = 0.6
-    yaw_rate_limit: float = 0.5
+    yaw_rate_limit: float = 0.6
     action_smoothing: float = 0.35
     freeze_vz: bool = False  # Stage 0: soft-band vz constraint
     freeze_vz_band_low: float = 2.0   # if z < this AND vz_cmd < 0 → override climb
     freeze_vz_band_high: float = 3.5  # if z > this → P-controller descend to band_high
     freeze_vz_hold_alt: float = 3.2   # legacy, unused by soft band
+
+    # Symbolic Extractor (BEV pipeline)
+    use_symbolic_extractor: bool = False  # True: 3-channel kinematic BEV; False: single-channel depth (legacy)
     freeze_vz_kp: float = 2.0         # P-gain for upper boundary enforcement
 
     # Altitude safe band
@@ -130,7 +134,7 @@ class EnvConfig:
     rescue_jitter_m: float = 3.0   # random XY offset added to rescue target to break same-position loops
 
     # Reset — pre-episode yaw alignment (from old drone_env.py L640-650)
-    pre_episode_auto_yaw_enabled: bool = True
+    pre_episode_auto_yaw_enabled: bool = False
     pre_episode_auto_yaw_timeout_s: float = 4.0
     pre_episode_auto_yaw_tol_deg: float = 8.0
     pre_episode_auto_yaw_gain: float = 1.2

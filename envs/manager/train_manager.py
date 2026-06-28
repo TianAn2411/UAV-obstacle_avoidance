@@ -75,9 +75,6 @@ class TrainManager:
         self._prev_prev_smoothed_action_n: np.ndarray = np.zeros(4, dtype=np.float32)
         self._prev_delta_a1: np.ndarray = np.zeros(4, dtype=np.float32)
 
-        # Depth stack
-        self._depth_history: deque = deque(maxlen=ecfg.depth_stack_size)
-
         # Episode done-reason tracking
         self._last_done_reason: Optional[str] = None
         self._ep_reward_sum: float = 0.0
@@ -92,9 +89,10 @@ class TrainManager:
         self._noise_manager = NoiseManager(ecfg, self._np_random)
 
         # DFA state (P-NSRL)
-        self._dfa_q: int = 0       # current DFA state index
-        self._dfa_N: int = 1       # total subgoal checkpoints this episode
-        self._dfa_q_prev: int = 0  # DFA state at previous step
+        self._dfa_q: int = 0            # current DFA state index
+        self._dfa_N: int = 1            # total subgoal checkpoints this episode
+        self._dfa_q_prev: int = 0       # DFA state at previous step
+        self._dfa_use_corridor: bool = False  # True → dfa_q=corridor_avoided_count; False → stage1_idx
 
     def close(self) -> None:
         """Clean up bridge and flush logs. Source: old drone_env.py L8134."""
@@ -202,13 +200,22 @@ class TrainManager:
             hold_alt=self.ecfg.freeze_vz_hold_alt if self.ecfg.freeze_vz else None
         )
 
-        # DFA reset — compute N from PillarManager subgoal lists (already populated above)
+        # DFA reset — Option B: dfa_q = corridor_avoided_count, dfa_N = active corridor pillars.
+        # Fallback to stage1 linear waypoints when no active corridor pillars exist.
         self._dfa_q = 0
         self._dfa_q_prev = 0
         if self._pillar_manager._p.num_pillars == 0:
             self._dfa_N = max(len(self._pillar_manager._stage1_sgs_xy), 1)
+            self._dfa_use_corridor = False
         else:
-            self._dfa_N = max(len(self._pillar_manager._bypass_sgs_xy), 1)
+            active_n = self._pillar_manager._active_corridor_pillar_count
+            if active_n > 0:
+                self._dfa_N = active_n
+                self._dfa_use_corridor = True
+            else:
+                # All pillars outside drone's path — fall back to linear progress
+                self._dfa_N = max(len(self._pillar_manager._stage1_sgs_xy), 1)
+                self._dfa_use_corridor = False
 
         dist_start = float(np.linalg.norm(self._goal[:2] - self._start[:2]))
         self._ep_dist_start = dist_start
@@ -227,10 +234,10 @@ class TrainManager:
         self._has_been_airborne = bool(float(synced_pos[2]) > self.ecfg.airborne_z)
         self._last_done_reason = None
 
-        self._reset_depth_history()
+        self.bridge.reset_extractor()
 
         obs = self._build_obs(
-            self._normalize_depth_frame(self.bridge.get_depth_84()),
+            self.bridge.get_perception(),
             self.bridge.get_ekf_position_enu(),
             self.bridge.get_linear_velocity(),
             self.bridge.get_yaw()[0],
@@ -277,7 +284,7 @@ class TrainManager:
                 f"(step={self._step_count}) — terminating episode"
             )
             obs = self._build_obs(
-                self._normalize_depth_frame(self.bridge.get_depth_84()),
+                self.bridge.get_perception(),
                 self.bridge.get_ekf_position_enu(),
                 self.bridge.get_linear_velocity(),
                 self.bridge.get_yaw()[0],
@@ -333,7 +340,7 @@ class TrainManager:
         pos = self.bridge.get_gazebo_position().astype(np.float32)
         vel = self.bridge.get_linear_velocity().astype(np.float32)
         yaw, _ = self.bridge.get_yaw()
-        depth_raw = self.bridge.get_depth_84()
+        perception = self.bridge.get_perception()  # (3,84,84) BEV or (1,84,84) depth
         ekf_pos = self.bridge.get_ekf_position_enu().astype(np.float32)
         ang_vel = self.bridge.get_angular_velocity().astype(np.float32)
 
@@ -356,22 +363,15 @@ class TrainManager:
             step_count=self._step_count,
         )
 
-        # 4b. DFA advance — mirror subgoal index from PillarManager
+        # 4b. DFA advance — Option B: corridor_avoided_count for pillar stages
         self._dfa_q_prev = self._dfa_q
-        if self._pillar_manager._p.num_pillars == 0:
-            new_idx = self._pillar_manager._stage1_idx
+        if self._dfa_use_corridor:
+            new_idx = self._pillar_manager._corridor_avoided_count
         else:
-            new_idx = self._pillar_manager._bypass_idx
+            new_idx = self._pillar_manager._stage1_idx
         self._dfa_q = min(new_idx, self._dfa_N)
 
         # 5. Compute obs-derived features
-        depth_frame = self._normalize_depth_frame(depth_raw)
-        sector_features = self._compute_depth_sector_features(depth_frame)
-        h, w = depth_frame.shape
-        center = depth_frame[int(h * 0.35):int(h * 0.75), int(w * 0.35):int(w * 0.65)]
-        front_depth = float(np.min(center)) if center.size > 0 else float(self.ecfg.depth_max)
-        min_depth = float(np.min(depth_frame))
-
         rel_goal_xy = (self._goal[:2] - pos[:2]).astype(np.float32)
         dist_xy = float(np.linalg.norm(rel_goal_xy))
         horizontal_speed = float(np.linalg.norm(vel_xy))
@@ -409,8 +409,6 @@ class TrainManager:
             stage_index=(0 if self.ecfg.freeze_vz else (1 if self._pillar_manager._p.num_pillars == 0 else 2)),
             dist_xy=dist_xy,
             prev_dist_xy=self._prev_dist_xy,
-            front_depth=front_depth,
-            depth_sector=sector_features,
             nearest_pillar_dist=pillar_snap.nearest_dist if np.isfinite(pillar_snap.nearest_dist) else None,
             nearest_pillar_xy=pillar_snap.nearest_xy,
             pillar_collision_snap=pillar_collision_snap,
@@ -426,7 +424,6 @@ class TrainManager:
             start=self._start,
             num_pillars=self._pillar_manager._p.num_pillars,
             horizontal_speed=horizontal_speed,
-            min_depth=min_depth,
             final_yaw_rate=action_out.yaw_rate,
             yaw_error=yaw_error,
             dfa_q=self._dfa_q,
@@ -455,8 +452,8 @@ class TrainManager:
                 pos=pos,
             )
 
-        # 7. Build obs (depth_frame already normalized at line 309)
-        obs = self._build_obs(depth_frame, ekf_pos, vel, float(yaw), ang_vel)
+        # 7. Build obs
+        obs = self._build_obs(perception, ekf_pos, vel, float(yaw), ang_vel)
 
         # Update carry state
         self._prev_pos = pos.copy()
@@ -485,8 +482,6 @@ class TrainManager:
             "step_count": self._step_count,
             "reward_components": components,
             "fence_margin": self._fence_margin_xy(pos[:2]),
-            "min_depth": min_depth,
-            "front_depth": front_depth,
             "dfa_q": self._dfa_q,
             "dfa_N": self._dfa_N,
         }
@@ -612,13 +607,10 @@ class TrainManager:
     # Observation / depth processing                                      #
     # ------------------------------------------------------------------ #
 
-    def _build_obs(self, depth_frame: np.ndarray, ekf_pos: np.ndarray, vel: np.ndarray, yaw: float, ang_vel: np.ndarray) -> dict:
-        """Push depth frame (meters) to rolling stack and build 23-dim state vector."""
-        if not self._depth_history or len(self._depth_history) == 0:
-            self._reset_depth_history()
-        self._depth_history.append(depth_frame.copy())
-        depth_stack = np.stack(list(self._depth_history), axis=0).astype(np.float32)
-        depth_stack = depth_stack / self.ecfg.depth_max  # meters → [0, 1] for CNN
+    def _build_obs(self, bev: np.ndarray, ekf_pos: np.ndarray, vel: np.ndarray, yaw: float, ang_vel: np.ndarray) -> dict:
+        """Build obs dict from (3,84,84) BEV tensor + 31-dim state vector."""
+        # bev: (3, 84, 84) meters [0, depth_max] from symbolic_extractor
+        depth_stack = (bev / self.ecfg.depth_max).astype(np.float32)  # → [0, 1] for CNN
 
         state_vec = self._build_state_vector(ekf_pos, vel, yaw, ang_vel)
 
@@ -781,68 +773,6 @@ class TrainManager:
         assert state.shape == (31,), f"state.shape expected (31,), got {state.shape}"
         return state
 
-    def _normalize_depth_frame(self, depth: np.ndarray) -> np.ndarray:
-        """Clip, fill NaN/inf, normalize to [0, depth_max]. Source: old drone_env.py L7413."""
-        try:
-            if depth is None:
-                raise ValueError("depth is None")
-            arr = np.asarray(depth, dtype=np.float32)
-            if arr.size == 0:
-                raise ValueError("empty")
-            arr = np.squeeze(arr)
-            if arr.ndim != 2:
-                raise ValueError(f"ndim={arr.ndim}")
-            if arr.shape != (84, 84):
-                raise ValueError(f"shape={arr.shape}")
-            arr = np.nan_to_num(arr, nan=0.0, posinf=10.0, neginf=0.0)
-            return np.clip(arr, 0.0, self.ecfg.depth_max).astype(np.float32)  # meters [0, depth_max]
-        except Exception:
-            return np.full((84, 84), 0.0, dtype=np.float32)
-
-    def _compute_depth_sector_features(self, depth_frame: np.ndarray) -> np.ndarray:
-        """
-        Crop into 3 horizontal sectors, return min/mean/free_frac per sector.
-        Source: old drone_env.py L7519.
-        """
-        d = np.asarray(depth_frame, dtype=np.float32)
-        d = np.nan_to_num(d, nan=0.0, posinf=10.0, neginf=0.0)
-        _, w = d.shape
-        s0 = d[:, 0:(w // 3)]
-        s1 = d[:, (w // 3):(2 * w // 3)]
-        s2 = d[:, (2 * w // 3):w]
-        sectors = [s0, s1, s2]
-
-        mins = [float(np.clip(np.min(s), 0.0, 10.0)) for s in sectors]
-        means = [float(np.clip(np.mean(s), 0.0, 10.0)) for s in sectors]
-        free = [float(np.clip(np.mean(s > 3.0), 0.0, 1.0)) for s in sectors]
-
-        return np.array(
-            [mins[0], mins[1], mins[2], means[0], means[1], means[2], free[0], free[1], free[2]],
-            dtype=np.float32,
-        )
-
-    def _compute_lidar_sector_features(self, lidar_scan: np.ndarray) -> np.ndarray:
-        """
-        Divide 45° LiDAR sweep (180 samples) into N angular sectors, return min range per sector.
-        Scan index 0 = -22.5° (hard left), index 179 = +22.5° (hard right).
-        sector_width = 45° / N  (e.g. N=36 → 1.25° per sector, 5 samples each).
-        Bad values must already be handled upstream in _lidar_cb before reaching here.
-        """
-        n = self.ecfg.lidar_num_sectors          # default 36
-        samples_per_sector = len(lidar_scan) // n  # 1080 // 36 = 30
-        features = np.array([
-            float(np.min(lidar_scan[i * samples_per_sector:(i + 1) * samples_per_sector]))
-            for i in range(n)
-        ], dtype=np.float32)
-        return features  # (36,) — min range per angular sector
-
-    def _reset_depth_history(self) -> None:
-        """Fill depth stack with max-range frames. Source: old drone_env.py L7541."""
-        frame = self._normalize_depth_frame(self.bridge.get_depth_84())
-        self._depth_history = deque(maxlen=self.ecfg.depth_stack_size)
-        for _ in range(self.ecfg.depth_stack_size):
-            self._depth_history.append(frame.copy())
-
     # ------------------------------------------------------------------ #
     # Terminal / fence checks                                             #
     # ------------------------------------------------------------------ #
@@ -866,11 +796,6 @@ class TrainManager:
 
         # Physical collision (pillar)
         if pillar_snap.is_collision:
-            return True, False, "collision"
-
-        # Bridge-detected collision (depth proxy — only meaningful when pillars present;
-        # with no pillars nearest_pillar_dist=inf so depth reads 10.0, not a real obstacle)
-        if self._pillar_manager._p.num_pillars > 0 and self.bridge.collided():
             return True, False, "collision"
 
         # Out of fence

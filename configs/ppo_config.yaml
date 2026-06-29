@@ -110,29 +110,30 @@ curriculum:
     freeze_cnn: true             # no pillars — CNN branch frozen, train state MLP only
     use_symbolic_extractor: true # 3-channel kinematic BEV (default False = 1-channel depth)
     # Stage 1: nhiễu obs rất nhỏ, chưa có action noise/delay — vz mới mở, cần ổn định trước
-    obs_noise_pos_std: 0.05
-    obs_noise_vel_std: 0.03
-    obs_noise_yaw_std: 0.01
-    obs_noise_ang_vel_std: 0.005
-    obs_noise_quat_std: 0.005
-    action_noise_std: 0.02
-    action_delay_steps: 0
-    mass_scale_min: 1.0          # no mass randomisation — altitude control cần ổn định trước
-    mass_scale_max: 1.0
-    wind_speed_max: 0.0          # no wind
+    obs_noise_pos_std: 0.08
+    obs_noise_vel_std: 0.04
+    obs_noise_yaw_std: 0.015
+    obs_noise_ang_vel_std: 0.007
+    obs_noise_quat_std: 0.008
+    action_noise_std: 0.01
+    action_delay_steps: 1
+    mass_scale_min: 0.95        # no mass randomisation — altitude control cần ổn định trước
+    mass_scale_max: 1.05
+    wind_speed_max: 0.5          # no wind
 
   - stage: 2
     num_pillars: 3
     min_steps: 500_000
     use_symbolic_extractor: true # 3-channel kinematic BEV (default False = 1-channel depth)
-    # Stage 2: thêm 1-step action delay + bắt đầu mass/wind nhẹ
+    # Stage 2: per-episode delay [0,1] + bắt đầu mass/wind nhẹ
     obs_noise_pos_std: 0.08
     obs_noise_vel_std: 0.04
     obs_noise_yaw_std: 0.015
     obs_noise_ang_vel_std: 0.007
     obs_noise_quat_std: 0.008
     action_noise_std: 0.03
-    action_delay_steps: 1
+    action_delay_steps: 0        # per-episode uniform int in [0, action_delay_steps_max]
+    action_delay_steps_max: 1
     mass_scale_min: 0.95         # ±5% mass variation
     mass_scale_max: 1.05
     wind_speed_max: 0.5          # up to 0.5 m/s wind
@@ -141,14 +142,15 @@ curriculum:
     num_pillars: 5
     min_steps: 500_000
     use_symbolic_extractor: true # 3-channel kinematic BEV (default False = 1-channel depth)
-    # Stage 3: tăng dần — drone phải né cột trong điều kiện sensor nhiễu + latency + wind
+    # Stage 3: per-episode delay [0,2] — drone phải robust với nhiều mức latency
     obs_noise_pos_std: 0.10
     obs_noise_vel_std: 0.05
     obs_noise_yaw_std: 0.02
     obs_noise_ang_vel_std: 0.010
     obs_noise_quat_std: 0.010
     action_noise_std: 0.04
-    action_delay_steps: 1
+    action_delay_steps: 0        # per-episode uniform int in [0, 2]
+    action_delay_steps_max: 2
     mass_scale_min: 0.92         # ±8% mass variation
     mass_scale_max: 1.08
     wind_speed_max: 1.0          # up to 1.0 m/s wind
@@ -164,7 +166,8 @@ curriculum:
     obs_noise_ang_vel_std: 0.012
     obs_noise_quat_std: 0.012
     action_noise_std: 0.05
-    action_delay_steps: 1
+    action_delay_steps: 0        # per-episode uniform int in [0, 2]
+    action_delay_steps_max: 2
     mass_scale_min: 0.90         # ±10% mass variation (Kaufmann 2023: ±15%)
     mass_scale_max: 1.10
     wind_speed_max: 2.0          # up to 2.0 m/s wind
@@ -180,7 +183,8 @@ curriculum:
     obs_noise_ang_vel_std: 0.012
     obs_noise_quat_std: 0.012
     action_noise_std: 0.05
-    action_delay_steps: 1
+    action_delay_steps: 0        # per-episode uniform int in [0, 2]
+    action_delay_steps_max: 2
     mass_scale_min: 0.90
     mass_scale_max: 1.10
     wind_speed_max: 2.0

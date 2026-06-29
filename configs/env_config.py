@@ -36,7 +36,8 @@ class EnvConfig:
     # Stage 4–5: action_noise_std=0.05, action_delay_steps=1 — full sim-to-real, gần thực tế nhất
     # Ghi chú: action_noise_std đơn vị m/s (vx/vy/vz) và rad/s (yaw_rate) — scale theo vx_limit
     action_noise_std: float = 0.0       # σ actuator noise added to sent cmd — real ESC jitter: 0.02–0.05
-    action_delay_steps: int = 0         # steps to delay execution — real total latency ~1 step (50ms)
+    action_delay_steps: int = 0         # minimum delay steps (fixed when action_delay_steps_max=0)
+    action_delay_steps_max: int = 0     # if > action_delay_steps: sample uniform int per-episode in [min, max]
 
     # Per-episode domain randomisation
     # mass_scale: uniform in [min, max] each episode — models mass/motor/battery variation

@@ -19,6 +19,7 @@ class TrainingMonitor(BaseCallback):
         verbose: int = 1,
         stage: int = 1,
         stage_steps: int = 0,
+        stage_start_step: int = 0,
         n_envs: int = 1,
         num_pillars: int = 0,
     ):
@@ -27,8 +28,9 @@ class TrainingMonitor(BaseCallback):
         self.csv_freq = int(csv_freq)
         self.stage = int(stage)
         self.stage_steps = int(stage_steps)
+        self.stage_start_step = int(stage_start_step)
         self.n_envs = int(n_envs)
-        self.num_pillars = int(num_pillars)
+        self.num_pillars = str(num_pillars)
         self.episode_rewards = []
         self.episode_lengths = []
         self.total_episodes = 0
@@ -254,7 +256,8 @@ class TrainingMonitor(BaseCallback):
     ):
         progress_pct = 0.0
         if self.stage_steps > 0:
-            progress_pct = min(100.0, 100.0 * float(timesteps_done) / float(self.stage_steps))
+            steps_in_stage = float(timesteps_done - self.stage_start_step)
+            progress_pct = min(100.0, 100.0 * steps_in_stage / float(self.stage_steps))
 
         row = {
             "wall_time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
@@ -262,7 +265,7 @@ class TrainingMonitor(BaseCallback):
             "train_step": int(timesteps_done),
             "progress_pct": round(progress_pct, 2),
             "episodes": int(episodes),
-            "num_pillars": int(self.num_pillars),
+            "num_pillars": self.num_pillars,
             "ep_rew_mean": f"{float(ep_rew_mean):.2f}",
             "ep_len_mean": f"{float(ep_len_mean):.1f}",
             "success_rate": round(float(success_rate), 4),

@@ -4,10 +4,13 @@ from dataclasses import dataclass
 @dataclass
 class PillarConfig:
     num_pillars: int = 0
+    min_pillars: int = 0
+    max_pillars: int = 0
+    uniform_pillar: bool = False
 
     # Pillar geometry
     radius_range: tuple = (0.2, 0.4)
-    height_range: tuple = (4.0, 6.0)
+    height_range: tuple = (6.0, 8.0)
     min_dist: float = 2.0
 
     # Spawn field
@@ -37,7 +40,7 @@ class PillarConfig:
 
     # Pool parking (pillars parked far away when not in use)
     pillar_pool_radius: float = 0.25
-    pillar_pool_height: float = 5.0
+    pillar_pool_height: float = 7.0
     pillar_pool_parking_x: float = 1000.0
     pillar_pool_parking_y: float = 50.0
     pillar_pool_parking_z: float = 20.0
@@ -55,7 +58,7 @@ class PillarConfig:
     post_pillar_pass_margin: float = 0.8
 
     # Bypass subgoal (geometry params only — reward values in RewardConfig)
-    bypass_max_active: int = 1         # max simultaneous bypass subgoals
+    bypass_max_active: int = 22        # max simultaneous bypass subgoals (covers all corridor pillars up to stage 5)
     gap_detection_enabled: bool = True
     required_gap_width: float = 1.6
 

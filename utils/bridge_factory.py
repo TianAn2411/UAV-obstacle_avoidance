@@ -57,12 +57,13 @@ try:
 except Exception:
     GzTransportClient = None
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scripts")))
-
 try:
-    import spawn_world
+    from obstacle_avoidance.utils import spawn_world
 except ImportError:
-    spawn_world = None
+    try:
+        from utils import spawn_world
+    except ImportError:
+        spawn_world = None
 
 try:
     from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
@@ -298,7 +299,7 @@ class ROSBridge(Node):
 
         self.keepalive_enabled = False
         self.keepalive_period = float(os.environ.get("KEEPALIVE_PERIOD", "0.05"))  # 20Hz default
-        self.keepalive_stale_time = float(os.environ.get("KEEPALIVE_STALE_TIME", "1.0"))  # 1 second stale threshold default
+        self.keepalive_stale_time = float(os.environ.get("KEEPALIVE_STALE_TIME", "3.0"))  # 3s: covers SB3 rollout inference gap
         self.keepalive_stale_hold_after_s = float(os.environ.get("KEEPALIVE_STALE_HOLD_AFTER_S", "30.0"))
         self.allow_keepalive_position_stale = False
         self.keepalive_target_alt = 2.8
@@ -408,6 +409,8 @@ class ROSBridge(Node):
             self._bev_proc_stop = True  # no thread to stop, but set flag for close() safety
             self._bev_proc_queue = None
             self._bev_proc_thread = None
+
+        self.spawn_debug_marker_pool()
 
     def enable_offboard_keepalive(self, enabled=False):
         self.keepalive_enabled = bool(enabled)
@@ -1797,6 +1800,47 @@ class ROSBridge(Node):
             return False
         return self.gz_client.set_wind(self.world_name, wx, wy, wz)
 
+    # ── Debug visual markers (disc pool, spawn-once + teleport) ──────────────
+
+    _DBG_GOAL_NAME = "dbg_goal_0"
+    _DBG_PARK_X    = 1000.0
+    _DBG_PARK_Y    = 150.0
+    _DBG_PARK_Z    = 0.05
+
+    def spawn_debug_marker_pool(self) -> None:
+        """Spawn goal disc (green) once at startup, parked far away."""
+        if spawn_world is None or self.gz_client is None or not self.gz_client.available():
+            return
+        env = {"GZ_PARTITION": os.environ.get("GZ_PARTITION", "")}
+        spawn_world.spawn_disc_marker(
+            self._DBG_GOAL_NAME, self._DBG_PARK_X, self._DBG_PARK_Y,
+            r=0.0, g=1.0, b=0.0, radius=0.5, world_name=self.world_name, env=env,
+        )
+        self.logger.info("[DBG MARKERS] spawned goal disc (green)")
+
+    def show_debug_markers(
+        self,
+        goal_xy: "np.ndarray",
+        marker_z: float = 0.05,
+    ) -> None:
+        """Teleport goal disc to new position. No-op if unavailable."""
+        if self.gz_client is None or not self.gz_client.available():
+            return
+        poses = [{"name": self._DBG_GOAL_NAME,
+                  "x": float(goal_xy[0]), "y": float(goal_xy[1]), "z": marker_z}]
+        self.gz_client.set_pose_vector(self.world_name, poses, timeout_ms=500)
+
+    def clear_debug_markers(self) -> None:
+        """Park goal disc far away."""
+        if self.gz_client is None or not self.gz_client.available():
+            return
+        self.gz_client.set_pose_vector(
+            self.world_name,
+            [{"name": self._DBG_GOAL_NAME,
+              "x": self._DBG_PARK_X, "y": self._DBG_PARK_Y, "z": self._DBG_PARK_Z}],
+            timeout_ms=500,
+        )
+
     def send_position_setpoint_ned(self, x, y, z, yaw=math.nan):
         """
         Gửi position setpoint theo PX4 local NED frame.
@@ -1964,7 +2008,7 @@ class ROSBridge(Node):
             for _ in range(10):
                 self.send_velocity(0.0, 0.0, 0.0, 0.0)
                 self._spin_once()
-            self.enable_offboard_keepalive(True)
+            self.enable_offboard_keepalive(False)
             return True
 
         self.logger.debug(
@@ -2048,7 +2092,7 @@ class ROSBridge(Node):
             return False
 
         self.logger.debug(f"[ARM] OFFBOARD velocity takeoff done. best_alt={best_alt:.2f}")
-        self.enable_offboard_keepalive(True)  # protect offboard signal during idle gaps between episodes
+        self.enable_offboard_keepalive(False)  # protect offboard signal during idle gaps between episodes
         return True
 
 
@@ -2567,12 +2611,14 @@ class Spawner:
             try:
                 return future.result(timeout=max_wait_s)
             except concurrent.futures.TimeoutError:
-                self.logger.warning(
-                    f"[SPAWNER] _gz_spin_wrap timeout after {max_wait_s}s fn={fn.__name__}"
-                )
+                msg = f"[SPAWNER] _gz_spin_wrap timeout after {max_wait_s}s fn={fn.__name__}"
+                self.logger.warning(msg)
+                print(msg, flush=True)
                 return None
             except Exception as exc:
-                self.logger.warning(f"[SPAWNER] _gz_spin_wrap error fn={fn.__name__}: {exc}")
+                msg = f"[SPAWNER] _gz_spin_wrap error fn={fn.__name__}: {exc}"
+                self.logger.warning(msg)
+                print(msg, flush=True)
                 return None
 
     def _gz_env(self):

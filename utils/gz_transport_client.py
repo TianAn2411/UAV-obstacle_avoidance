@@ -32,6 +32,11 @@ try:
 except Exception:
     GzWind = None
 
+try:
+    from gz.msgs10.marker_pb2 import Marker as GzMarker
+except Exception:
+    GzMarker = None
+
 
 @contextlib.contextmanager
 def gz_partition_env(gz_partition):
@@ -303,6 +308,70 @@ class GzTransportClient:
         if result is None:
             return True
         return bool(result)
+
+    def _get_marker_pub(self):
+        if GzMarker is None or not self.available():
+            return None
+        if not hasattr(self, "_marker_pub"):
+            try:
+                with gz_partition_env(self.gz_partition):
+                    self._marker_pub = self.node.advertise("/marker", GzMarker)
+            except Exception as exc:
+                self.logger.debug(f"[GZ MARKER] advertise failed: {exc}")
+                self._marker_pub = None
+        return self._marker_pub
+
+    def show_marker(
+        self,
+        marker_id: int,
+        x: float, y: float, z: float,
+        r: float, g: float, b: float, a: float = 0.8,
+        scale: float = 0.4,
+        ns: str = "rl_debug",
+    ) -> bool:
+        pub = self._get_marker_pub()
+        if pub is None:
+            return False
+        try:
+            m = GzMarker()
+            m.ns = ns
+            m.id = int(marker_id)
+            m.action = GzMarker.ADD_MODIFY
+            m.type = GzMarker.SPHERE
+            m.pose.position.x = float(x)
+            m.pose.position.y = float(y)
+            m.pose.position.z = float(z)
+            m.pose.orientation.w = 1.0
+            m.scale.x = float(scale)
+            m.scale.y = float(scale)
+            m.scale.z = float(scale)
+            m.material.diffuse.r = float(r)
+            m.material.diffuse.g = float(g)
+            m.material.diffuse.b = float(b)
+            m.material.diffuse.a = float(a)
+            m.material.ambient.r = float(r) * 0.5
+            m.material.ambient.g = float(g) * 0.5
+            m.material.ambient.b = float(b) * 0.5
+            m.material.ambient.a = float(a)
+            with gz_partition_env(self.gz_partition):
+                return bool(pub.publish(m))
+        except Exception as exc:
+            self.logger.debug(f"[GZ MARKER] show failed id={marker_id}: {exc}")
+            return False
+
+    def clear_markers(self, ns: str = "rl_debug") -> bool:
+        pub = self._get_marker_pub()
+        if pub is None:
+            return False
+        try:
+            m = GzMarker()
+            m.ns = ns
+            m.action = GzMarker.DELETE_ALL
+            with gz_partition_env(self.gz_partition):
+                return bool(pub.publish(m))
+        except Exception as exc:
+            self.logger.debug(f"[GZ MARKER] clear failed: {exc}")
+            return False
 
     def set_wind(self, world_name: str, wx: float, wy: float, wz: float = 0.0) -> bool:
         """Publish horizontal wind velocity (ENU m/s) to Gazebo WindEffects plugin."""

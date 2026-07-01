@@ -96,7 +96,7 @@ class EnvConfig:
 
     # Altitude safe band
     alt_min: float = 0.8
-    alt_max: float = 5.0
+    alt_max: float = 7.0
 
     # Episode limits
     max_steps: int = 500
@@ -139,6 +139,7 @@ class EnvConfig:
     pre_episode_auto_yaw_timeout_s: float = 4.0
     pre_episode_auto_yaw_tol_deg: float = 8.0
     pre_episode_auto_yaw_gain: float = 1.2
+    yaw_curriculum_steps: int = 0   # steps over which yaw assist fades 0→π; 0=binary on/off
 
     # Reset — multi-env fast reset (from old drone_env.py L616-636)
     multi_env_fast_reset_enabled: bool = False

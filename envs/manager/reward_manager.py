@@ -13,7 +13,6 @@ class RewardComponents:
     # Navigation
     time: float = 0.0
     # Altitude
-    ground: float = 0.0
     altitude: float = 0.0
     # Action quality
     smooth: float = 0.0
@@ -31,6 +30,7 @@ class RewardComponents:
     pillar_clearance_soft: float = 0.0
     collision_course: float = 0.0
     bypass_reward: float = 0.0
+    stage1_waypoint_bonus: float = 0.0
     # Pillar behavior
     post_pillar: float = 0.0
     # Terminal
@@ -74,6 +74,7 @@ class StepState:
     dfa_q: int = 0                         # current DFA state index (0..N)
     dfa_N: int = 1                         # total subgoal checkpoints this episode
     dfa_q_prev: int = 0                    # DFA state at previous step (detect transition)
+    stage1_waypoint_advance: int = 0       # waypoints newly crossed this step (pillar stages only)
 
 
 class RewardManager:
@@ -132,10 +133,10 @@ class RewardManager:
         c.rm_bonus = rm
 
         # --- Time ---
-        c.time = self._reward_time(state.step_count, state)
+        c.time = self._reward_time(state)
 
         # --- Altitude ---
-        c.ground, c.altitude = self._reward_altitude(state)
+        c.altitude = self._reward_altitude(state)
 
         # --- Action quality ---
         c.smooth = self._reward_smooth(state.action, state.prev_action)
@@ -167,6 +168,7 @@ class RewardManager:
                 danger_scale = max(0.0, min(1.0, clearance_body / self._r.clearance_body_safe))
                 c.yaw_align *= max(0.30, danger_scale)
             c.bypass_reward = float(state.bypass_subgoal_info.get("reward", 0.0))
+            c.stage1_waypoint_bonus = int(state.stage1_waypoint_advance) * float(self._r.stage1_sg_bonus_pillar_stage)
             # Approach velocity penalty: penalize speed component directed INTO nearest pillar.
             # approach_speed = dot(vel_xy, dir_to_pillar) — zero when dodging laterally.
             # proximity_weight = linear 0→1 as clearance drops 2m→0.
@@ -199,12 +201,13 @@ class RewardManager:
         c.total = (
             c.pbrs + c.rm_bonus
             + c.time
-            + c.ground + c.altitude
+            + c.altitude
             + c.smooth + c.yaw_rate_penalty + c.speed_penalty + c.fall_penalty
             + c.yaw_align
             + c.lateral + c.near_fence + c.start_zone
             + c.pillar_too_close + c.pillar_clearance_soft + c.collision_course
             + c.bypass_reward
+            + c.stage1_waypoint_bonus
             + c.post_pillar
             + c.terminal
         )
@@ -214,49 +217,40 @@ class RewardManager:
     # Reward computation helpers                                          #
     # ------------------------------------------------------------------ #
 
-    def _reward_time(self, step_count: int, state: StepState) -> float:
-        # Escalating penalty. Source: old drone_env.py L5024-5032
-        r = self._r.time_penalty_base
-        if state.num_pillars > 0:
-            if step_count > 170:
-                r += self._r.time_penalty_step170
-            if step_count > 250:
-                r += self._r.time_penalty_step250
-            if step_count > 350:
-                r += self._r.time_penalty_step350
-            if step_count > 450:
-                r += self._r.time_penalty_step450
-        return r
+    def _reward_time(self, state: StepState) -> float:
+        return self._r.time_penalty_base
 
-    def _reward_altitude(self, state: StepState) -> tuple[float, float]:
+    def _reward_altitude(self, state: StepState) -> float:
         z = float(state.pos[2])
+        r = self._r
+        e = self._e
 
-        # Gaussian reward for optimal altitude
-        optimal_reward = 0.0
-        if self._r.alt_optimal_coef != 0.0:
-            alt_error = z - self._r.alt_optimal_target
-            optimal_reward = self._r.alt_optimal_coef * np.exp(
-                -(alt_error ** 2) / (2.0 * self._r.alt_optimal_sigma ** 2)
-            )
+        # Altitude positive reward: low ramp → flat → high ramp
+        if r.alt_optimal_low <= z <= r.alt_optimal_high:
+            optimal_reward = r.alt_optimal_reward
+        elif r.alt_suboptimal_low_thresh <= z < r.alt_optimal_low:
+            ramp = (z - r.alt_suboptimal_low_thresh) / (r.alt_optimal_low - r.alt_suboptimal_low_thresh)
+            optimal_reward = r.alt_ramp_coef * ramp
+        elif r.alt_optimal_high < z <= r.alt_suboptimal_high_thresh:
+            ramp = (r.alt_suboptimal_high_thresh - z) / (r.alt_suboptimal_high_thresh - r.alt_optimal_high)
+            optimal_reward = r.alt_ramp_coef * ramp
+        else:
+            optimal_reward = 0.0
 
-        # Linear penalty outside safe bounds + suboptimal low zone
+        # Piecewise penalty
         penalty = 0.0
-        if z < self._e.alt_min:
-            # Continuous with suboptimal zone: start at boundary_penalty at z=alt_min,
-            # then add extra slope. Prevents alt_below_min from being lighter than
-            # the suboptimal penalty just above alt_min (which would incentivise flying low).
-            boundary_penalty = self._r.alt_suboptimal_low_coef * (
-                self._r.alt_suboptimal_low_thresh - self._e.alt_min
-            )
-            extra_penalty = self._r.alt_below_min_coef * (self._e.alt_min - z)
+        if z < e.alt_min:
+            boundary_penalty = r.alt_suboptimal_low_coef * (r.alt_suboptimal_low_thresh - e.alt_min)
+            extra_penalty = r.alt_below_min_coef * (e.alt_min - z)
             penalty = boundary_penalty + extra_penalty
-        elif z < self._r.alt_suboptimal_low_thresh:
-            # In allowed range but suboptimal low (e.g., 2.0-2.5m)
-            penalty = self._r.alt_suboptimal_low_coef * (self._r.alt_suboptimal_low_thresh - z)
-        elif z > self._e.alt_max:
-            penalty = self._r.alt_above_max_coef * (z - self._e.alt_max)
+        elif z < r.alt_suboptimal_low_thresh:
+            penalty = r.alt_suboptimal_low_coef * (r.alt_suboptimal_low_thresh - z)
+        elif z > e.alt_max:
+            penalty = r.alt_above_max_coef * (z - e.alt_max)
+        elif z > r.alt_suboptimal_high_thresh:
+            penalty = r.alt_above_suboptimal_coef * (z - r.alt_suboptimal_high_thresh)
 
-        return optimal_reward, penalty
+        return optimal_reward + penalty
 
     def _reward_smooth(self, action: np.ndarray, prev_action: np.ndarray) -> float:
         # Source: old drone_env.py L5066
@@ -270,22 +264,14 @@ class RewardManager:
         yaw_align_cos = float(math.cos(float(yaw_error)))
         camera_fwd_dot = float(np.clip(math.cos(float(yaw_error)), -1.0, 1.0))
 
-        if state.stage_index <= 1:
-            reward_face = r.stage1_face_goal_coef * yaw_align_cos
-        else:
-            reward_face = 0.10 * yaw_align_cos
+        reward_face = r.stage1_face_goal_coef * yaw_align_cos
 
         total = reward_face
 
         # Forward-goal bonus/penalty (thresholds/coefs configurable in RewardConfig)
-        if state.stage_index <= 1 and state.num_pillars == 0:
-            good_thresh = r.stage1_yaw_good_thresh
-            reward_coef = r.stage1_yaw_forward_bonus_coef
-            penalty_coef = r.stage1_yaw_forward_penalty_coef
-        else:
-            good_thresh = r.stage2_yaw_good_thresh
-            reward_coef = r.stage2_yaw_forward_bonus_coef
-            penalty_coef = r.stage2_yaw_forward_penalty_coef
+        good_thresh = r.stage1_yaw_good_thresh
+        reward_coef = r.stage1_yaw_forward_bonus_coef
+        penalty_coef = r.stage1_yaw_forward_penalty_coef
 
         if camera_fwd_dot >= good_thresh:
             total += reward_coef * (camera_fwd_dot - good_thresh) / max(1e-6, 1.0 - good_thresh)

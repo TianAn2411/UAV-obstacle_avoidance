@@ -2,7 +2,9 @@ import dataclasses
 import logging
 import multiprocessing as mp
 import os
+import tempfile
 import time
+import zipfile
 from datetime import datetime
 from typing import Callable
 
@@ -39,6 +41,66 @@ from obstacle_avoidance.utils.process_utils import (
 from obstacle_avoidance.utils.px4_manager import PX4InstanceManager
 
 logger = logging.getLogger("obstacle_avoidance")
+
+
+class _SafeCheckpointCallback(CheckpointCallback):
+    """CheckpointCallback that strips unpicklable instance method patches before saving."""
+    def _on_step(self) -> bool:
+        _patch = self.model.__dict__.pop("_update_learning_rate", None)
+        try:
+            return super()._on_step()
+        finally:
+            if _patch is not None:
+                self.model._update_learning_rate = _patch
+
+
+def _ppo_load(path: str, env, **kwargs) -> PPO:
+    """PPO.load wrapper that fixes optimizer param-group mismatch on resume.
+
+    Cold-start creates a multi-group (8-group) optimizer. Any checkpoint saved during
+    that phase has 8 groups in policy.optimizer.pth. A fresh PPO model has 1 group.
+    PyTorch load_state_dict checks group count and raises ValueError on mismatch.
+
+    Fix: merge all saved param groups into one, reset momentum state to empty.
+    Cold-start code replaces the optimizer entirely after load anyway, so losing
+    momentum is harmless.
+    """
+    import io as _io
+    from stable_baselines3.common.save_util import load_from_zip_file
+
+    src = path if path.endswith(".zip") else path + ".zip"
+    data, params, pytorch_variables = load_from_zip_file(src, device="cpu")
+
+    saved_optim = params.get("policy.optimizer")
+    n_groups = len(saved_optim.get("param_groups", [])) if saved_optim else 0
+
+    if n_groups <= 1:
+        return PPO.load(path, env=env, **kwargs)
+
+    # Merge all param groups → single group, reset momentum (empty state).
+    saved_pgs = saved_optim["param_groups"]
+    all_param_ids = sorted({pid for pg in saved_pgs for pid in pg["params"]})
+    merged_optim = {"state": {}, "param_groups": [{**saved_pgs[0], "params": all_param_ids}]}
+    params["policy.optimizer"] = merged_optim
+
+    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+        tmp_path = tmp.name
+    try:
+        with zipfile.ZipFile(src, "r") as z_in, \
+             zipfile.ZipFile(tmp_path, "w", compression=zipfile.ZIP_DEFLATED) as z_out:
+            for item in z_in.infolist():
+                if item.filename == "policy.optimizer.pth":
+                    buf = _io.BytesIO()
+                    torch.save(merged_optim, buf)
+                    z_out.writestr("policy.optimizer.pth", buf.getvalue())
+                else:
+                    z_out.writestr(item, z_in.read(item.filename))
+        return PPO.load(tmp_path, env=env, **kwargs)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
 
 
 def _get_env_cores(rank: int, machine_cfg: dict) -> list:
@@ -268,7 +330,12 @@ def make_env(
 
         # 8. Construct DroneObstacleEnv — old L1176-1197
         rcfg = RewardConfig()
-        pcfg = PillarConfig(num_pillars=num_pillars)
+        pcfg = PillarConfig(
+            num_pillars=num_pillars,
+            min_pillars=int(stage_conf.get("min_pillars", num_pillars) if stage_conf else num_pillars),
+            max_pillars=int(stage_conf.get("max_pillars", num_pillars) if stage_conf else num_pillars),
+            uniform_pillar=bool(stage_conf.get("uniform_pillar", False) if stage_conf else False),
+        )
 
         # Log dir: env_logs/env_{rank}/stage{N}_{ts}/
         if env_log_dir:
@@ -358,17 +425,15 @@ def run_training(stage: int = 1) -> None:
     elif stage > 0 and os.path.exists(prev_final_model_path):
         resume_source = prev_final_model_path
 
-    # --- Probe resume timesteps ---
+    # --- Probe resume timesteps (read from zip data entry — avoids loading optimizer) ---
     resume_timesteps = 0
     if resume_source is not None:
         try:
-            probe = PPO.load(
-                resume_source,
-                n_steps=ppo_cfg["n_steps"],
-                batch_size=ppo_cfg["batch_size"],
-            )
-            resume_timesteps = int(getattr(probe, "num_timesteps", 0))
-            del probe
+            _src = resume_source if resume_source.endswith(".zip") else resume_source + ".zip"
+            with zipfile.ZipFile(_src, "r") as _zf:
+                if "data" in _zf.namelist():
+                    import json as _json
+                    resume_timesteps = int(_json.loads(_zf.read("data")).get("num_timesteps", 0))
         except Exception as e:
             logger.warning(
                 f"[RESUME] failed to read num_timesteps from {resume_source}: {e}"
@@ -541,25 +606,25 @@ def run_training(stage: int = 1) -> None:
 
     if os.path.exists(interrupted_model_path):
         _log_model_load(interrupted_model_path, f"Resume stage {stage} from INTERRUPTED model")
-        model = PPO.load(interrupted_model_path, env=env, **_ppo_override_kwargs)
+        model = _ppo_load(interrupted_model_path, env=env, **_ppo_override_kwargs)
         logger.info(f"[MODEL LOAD] loaded_num_timesteps={int(getattr(model, 'num_timesteps', -1))}")
         _log_ppo_params(model)
 
     elif latest_ckpt is not None:
         _log_model_load(latest_ckpt, f"Resume stage {stage} from latest checkpoint")
-        model = PPO.load(latest_ckpt, env=env, **_ppo_override_kwargs)
+        model = _ppo_load(latest_ckpt, env=env, **_ppo_override_kwargs)
         logger.info(f"[MODEL LOAD] loaded_num_timesteps={int(getattr(model, 'num_timesteps', -1))}")
         _log_ppo_params(model)
 
     elif os.path.exists(final_model_path):
         _log_model_load(final_model_path, f"Resume stage {stage} from final model")
-        model = PPO.load(final_model_path, env=env, **_ppo_override_kwargs)
+        model = _ppo_load(final_model_path, env=env, **_ppo_override_kwargs)
         logger.info(f"[MODEL LOAD] loaded_num_timesteps={int(getattr(model, 'num_timesteps', -1))}")
         _log_ppo_params(model)
 
     elif stage > 0 and os.path.exists(prev_final_model_path):
         _log_model_load(prev_final_model_path, f"Stage-transfer: stage {stage - 1} -> {stage} (lr=1e-4)")
-        model = PPO.load(prev_final_model_path, env=env, **_ppo_override_kwargs)
+        model = _ppo_load(prev_final_model_path, env=env, **_ppo_override_kwargs)
         logger.info(f"[MODEL LOAD] loaded_num_timesteps={int(getattr(model, 'num_timesteps', -1))}")
         _log_ppo_params(model)
 
@@ -581,10 +646,6 @@ def run_training(stage: int = 1) -> None:
     freeze_cnn = bool(conf.get("freeze_cnn", False))
     extractor = model.policy.features_extractor
     _state_fc0 = extractor.state_fc[0]
-    logger.info(
-        f"[MODEL] state_fc[0]: Linear({_state_fc0.in_features}, {_state_fc0.out_features}) "
-        f"— state_dim={'✓ 31' if _state_fc0.in_features == 31 else f'⚠ {_state_fc0.in_features} (expected 31)'}"
-    )
     for name, param in extractor.named_parameters():
         if name.startswith("cnn"):  # covers cnn.* and cnn_fc.*
             param.requires_grad = not freeze_cnn
@@ -601,21 +662,35 @@ def run_training(stage: int = 1) -> None:
         _s_cnn    = float(ppo_cfg.get("cnn_coldstart_cnn_lr_scale",    1.0))
         _s_state  = float(ppo_cfg.get("cnn_coldstart_state_lr_scale",  0.1))
         _s_fusion = float(ppo_cfg.get("cnn_coldstart_fusion_lr_scale", 0.33))
-        _ext = model.policy.features_extractor
-        _pg_lrs = [
-            (_ext.cnn.parameters(),                    _base_lr * _s_cnn),
-            (_ext.cnn_fc.parameters(),                 _base_lr * _s_cnn),
-            (_ext.state_fc.parameters(),               _base_lr * _s_state),
-            (_ext.fusion_fc.parameters(),              _base_lr * _s_fusion),
-            (_ext.fusion_norm.parameters(),            _base_lr * _s_fusion),
-            (model.policy.mlp_extractor.parameters(),  _base_lr * _s_fusion),
-            (model.policy.action_net.parameters(),     _base_lr * _s_fusion),
-            (model.policy.value_net.parameters(),      _base_lr * _s_fusion),
-        ]
-        model.policy.optimizer = torch.optim.Adam(
-            [{"params": p, "lr": lr, "initial_lr": lr} for p, lr in _pg_lrs],
-            eps=1e-5,
-        )
+        # Build param-id sets across ALL feature extractors (pi/vf may be separate copies).
+        _cnn_ids, _state_ids, _fusion_ids = set(), set(), set()
+        for _fe in {model.policy.features_extractor,
+                    model.policy.pi_features_extractor,
+                    model.policy.vf_features_extractor}:
+            for p in _fe.cnn.parameters():        _cnn_ids.add(id(p))
+            for p in _fe.cnn_fc.parameters():     _cnn_ids.add(id(p))
+            for p in _fe.state_fc.parameters():   _state_ids.add(id(p))
+            for p in _fe.fusion_fc.parameters():  _fusion_ids.add(id(p))
+            for p in _fe.fusion_norm.parameters(): _fusion_ids.add(id(p))
+
+        # Assign every trainable policy param to exactly one group.
+        _g_cnn, _g_state, _g_rest = [], [], []
+        for p in model.policy.parameters():
+            if not p.requires_grad:
+                continue
+            pid = id(p)
+            if pid in _cnn_ids:
+                _g_cnn.append(p)
+            elif pid in _state_ids:
+                _g_state.append(p)
+            else:
+                _g_rest.append(p)  # fusion, mlp_extractor, action_net, value_net
+
+        model.policy.optimizer = torch.optim.Adam([
+            {"params": _g_cnn,   "lr": _base_lr * _s_cnn,    "initial_lr": _base_lr * _s_cnn},
+            {"params": _g_state, "lr": _base_lr * _s_state,  "initial_lr": _base_lr * _s_state},
+            {"params": _g_rest,  "lr": _base_lr * _s_fusion, "initial_lr": _base_lr * _s_fusion},
+        ], eps=1e-5)
         # SB3 calls _update_learning_rate() each rollout and flattens all param groups
         # to the same LR — restore per-group values afterwards.
         import types as _types
@@ -634,7 +709,7 @@ def run_training(stage: int = 1) -> None:
         )
 
     # --- Callbacks ---
-    ckpt_callback = CheckpointCallback(
+    ckpt_callback = _SafeCheckpointCallback(
         save_freq=max(check_freq // n_envs, 1),
         save_path=ckpt_dir,
         name_prefix=f"stage{stage}",
@@ -645,23 +720,44 @@ def run_training(stage: int = 1) -> None:
         csv_freq=check_freq,
         stage=stage,
         stage_steps=int(conf["min_steps"]),
+        stage_start_step=stage_start_step,
         n_envs=n_envs,
-        num_pillars=int(conf["num_pillars"]),
+        num_pillars=(
+            f"uniform[{conf.get('min_pillars', 0)}-{conf.get('max_pillars', 0)}]"
+            if conf.get("uniform_pillar", False)
+            else conf.get("num_pillars", conf.get("min_pillars", 0))
+        ),
     )
 
     # --- Crash handler ---
     def save_interrupted_model(reason: str) -> None:
+        # Remove non-picklable CNN cold-start patch (closure bound to model instance)
+        # before saving — only needed for ongoing LR override, not for checkpoint weights.
+        model.__dict__.pop('_update_learning_rate', None)
+
+        saved_model = False
         try:
             model.save(interrupted_save_path)
-            env.save(vecnorm_interrupted_path)
-            logger.info(
-                f"[TRAIN SAVE] interrupted reason={reason} path={interrupted_save_path}.zip"
-            )
+            saved_model = True
         except BaseException as save_exc:
             logger.error(
-                f"[TRAIN SAVE FAILED] interrupted reason={reason} "
+                f"[TRAIN SAVE FAILED] model save reason={reason} "
                 f"path={interrupted_save_path}.zip "
                 f"error={type(save_exc).__name__}: {save_exc}"
+            )
+
+        try:
+            env.save(vecnorm_interrupted_path)
+        except BaseException as save_exc:
+            logger.error(
+                f"[TRAIN SAVE FAILED] vecnorm save reason={reason} "
+                f"path={vecnorm_interrupted_path} "
+                f"error={type(save_exc).__name__}: {save_exc}"
+            )
+
+        if saved_model:
+            logger.info(
+                f"[TRAIN SAVE] interrupted reason={reason} path={interrupted_save_path}.zip"
             )
 
     logger.info(

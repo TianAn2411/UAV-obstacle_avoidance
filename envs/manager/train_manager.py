@@ -58,6 +58,7 @@ class TrainManager:
         # Episode state
         self._step_count: int = 0
         self._global_step: int = int(start_step)
+        self._stage_start_step: int = int(start_step)
         self._goal_xy_radius: float = float(ecfg.goal_xy_radius_schedule_values[0])
         self._last_goal_xy_radius_logged: Optional[float] = None
 
@@ -93,6 +94,8 @@ class TrainManager:
         self._dfa_N: int = 1            # total subgoal checkpoints this episode
         self._dfa_q_prev: int = 0       # DFA state at previous step
         self._dfa_use_corridor: bool = False  # True → dfa_q=corridor_avoided_count; False → stage1_idx
+        self._prev_stage1_idx: int = 0  # stage1_idx at previous step (for waypoint advance delta)
+        self._dfa_segment_t_boundaries: list = [0.0, 1.0]  # corridor t-boundaries per DFA segment
 
     def close(self) -> None:
         """Clean up bridge and flush logs. Source: old drone_env.py L8134."""
@@ -123,6 +126,26 @@ class TrainManager:
             f"mode={decision.mode} fence_margin={fence_margin:.2f}"
         )
 
+        # Yaw curriculum: assist_ratio ~ Uniform(min_assist, 1.0), step-wise schedule.
+        # (threshold_steps, min_assist): at each milestone min_assist drops.
+        _assist_ratio = 1.0
+        if self.ecfg.pre_episode_auto_yaw_enabled:
+            _steps_in_stage = max(0, self._global_step - self._stage_start_step)
+            _YAW_SCHEDULE = [
+                (     0, 1.0),  # 0–50k:   Uniform(1.0, 1.0) — full assist
+                ( 50_000, 0.7),  # 50–80k:  Uniform(0.7, 1.0)
+                ( 80_000, 0.6),  # 80–130k: Uniform(0.6, 1.0)
+                (130_000, 0.4),  # 130–200k:Uniform(0.4, 1.0)
+                (200_000, 0.2),  # 200–300k:Uniform(0.2, 1.0)
+                (300_000, 0.0),  # 300k+:   Uniform(0.0, 1.0)
+            ]
+            _min_assist = 0.0
+            for _thresh, _val in reversed(_YAW_SCHEDULE):
+                if _steps_in_stage >= _thresh:
+                    _min_assist = _val
+                    break
+            _assist_ratio = float(self._np_random.uniform(_min_assist, 1.0))
+
         if decision.mode == "startup_arm":
             # For grounded reasons, drone may be far from self._start — use current pos so
             # _startup_arm_sanity pose check doesn't fail before even trying to arm.
@@ -135,14 +158,14 @@ class TrainManager:
             if np.all(np.isfinite(new_pos)):
                 self._start = np.array([new_pos[0], new_pos[1], 0.0], dtype=np.float32)
             self._goal = self._generate_new_goal(override_start=self._start)
-            self._reset_manager.pre_episode_auto_yaw_to_goal(self._goal)
+            self._reset_manager.pre_episode_auto_yaw_to_goal(self._goal, _assist_ratio)
             self._pillar_manager.reset_episode(self._start, self._goal)
 
         elif decision.mode == "continuous":
             new_start_xy = self._reset_manager.continuous_episode_reset(reason)
             self._start = np.array([new_start_xy[0], new_start_xy[1], 0.0], dtype=np.float32)
             self._goal = self._generate_new_goal(override_start=self._start)
-            self._reset_manager.pre_episode_auto_yaw_to_goal(self._goal)
+            self._reset_manager.pre_episode_auto_yaw_to_goal(self._goal, _assist_ratio)
             self._pillar_manager.reset_episode(self._start, self._goal)
 
         elif decision.mode == "rescue_then_continuous":
@@ -159,7 +182,7 @@ class TrainManager:
                 self._start = np.array([new_pos[0], new_pos[1], 0.0], dtype=np.float32)
 
             self._goal = self._generate_new_goal(override_start=self._start)
-            self._reset_manager.pre_episode_auto_yaw_to_goal(self._goal)
+            self._reset_manager.pre_episode_auto_yaw_to_goal(self._goal, _assist_ratio)
             self._pillar_manager.reset_episode(self._start, self._goal)
 
         elif decision.mode == "multi_env_fast":
@@ -174,7 +197,7 @@ class TrainManager:
                 new_pos = self.bridge.get_gazebo_position()
                 self._start = np.array([new_pos[0], new_pos[1], 0.0], dtype=np.float32)
             self._goal = self._generate_new_goal(override_start=self._start)
-            self._reset_manager.pre_episode_auto_yaw_to_goal(self._goal)
+            self._reset_manager.pre_episode_auto_yaw_to_goal(self._goal, _assist_ratio)
             self._pillar_manager.reset_episode(self._start, self._goal)
 
         else:  # hard
@@ -182,7 +205,7 @@ class TrainManager:
             new_pos = self.bridge.get_gazebo_position()
             self._start = np.array([new_pos[0], new_pos[1], 0.0], dtype=np.float32)
             self._goal = self._generate_new_goal(override_start=self._start)
-            self._reset_manager.pre_episode_auto_yaw_to_goal(self._goal)
+            self._reset_manager.pre_episode_auto_yaw_to_goal(self._goal, _assist_ratio)
             self._pillar_manager.reset_episode(self._start, self._goal)
 
         # If armed but still below 1m after reset (e.g. continuous reset landed low),
@@ -204,18 +227,22 @@ class TrainManager:
         # Fallback to stage1 linear waypoints when no active corridor pillars exist.
         self._dfa_q = 0
         self._dfa_q_prev = 0
-        if self._pillar_manager._p.num_pillars == 0:
-            self._dfa_N = max(len(self._pillar_manager._stage1_sgs_xy), 1)
+        if self._pillar_manager._actual_num_pillars == 0:
+            # +1: goal is the final DFA state (dfa=1.0 only at goal, not at last waypoint)
+            self._dfa_N = max(len(self._pillar_manager._stage1_sgs_xy), 1) + 1
             self._dfa_use_corridor = False
         else:
             active_n = self._pillar_manager._active_corridor_pillar_count
             if active_n > 0:
-                self._dfa_N = active_n
+                # +1: goal is the final DFA state (dfa=1.0 only at goal, not after last pillar)
+                self._dfa_N = active_n + 1
                 self._dfa_use_corridor = True
             else:
                 # All pillars outside drone's path — fall back to linear progress
-                self._dfa_N = max(len(self._pillar_manager._stage1_sgs_xy), 1)
+                self._dfa_N = max(len(self._pillar_manager._stage1_sgs_xy), 1) + 1
                 self._dfa_use_corridor = False
+
+        self._dfa_segment_t_boundaries = self._compute_dfa_segment_boundaries()
 
         dist_start = float(np.linalg.norm(self._goal[:2] - self._start[:2]))
         self._ep_dist_start = dist_start
@@ -224,6 +251,7 @@ class TrainManager:
 
         synced_pos = self.bridge.get_gazebo_position()
         self._step_count = 0
+        self._prev_stage1_idx = 0
         self._prev_pos = synced_pos.copy() if np.all(np.isfinite(synced_pos)) else self._start.copy()
         self._prev_dist_xy = float(np.linalg.norm(self._goal[:2] - self._prev_pos[:2]))
         self._prev_action = np.zeros(4, dtype=np.float32)
@@ -235,6 +263,8 @@ class TrainManager:
         self._last_done_reason = None
 
         self.bridge.reset_extractor()
+
+        self.bridge.show_debug_markers(self._goal[:2])
 
         obs = self._build_obs(
             self.bridge.get_perception(),
@@ -316,7 +346,6 @@ class TrainManager:
             step_count=self._step_count,
             altitude=alt,
             is_takeoff_phase=is_takeoff,
-            num_pillars=self._pillar_manager._p.num_pillars,
         )
 
         # 2. Domain randomisation pipeline → send velocity and tick
@@ -371,6 +400,11 @@ class TrainManager:
             new_idx = self._pillar_manager._stage1_idx
         self._dfa_q = min(new_idx, self._dfa_N)
 
+        # 4c. Stage1 waypoint advance (pillar stages only — fires flat bonus, not DFA)
+        _cur_stage1_idx = self._pillar_manager._stage1_idx
+        _stage1_advance = max(0, _cur_stage1_idx - self._prev_stage1_idx)
+        self._prev_stage1_idx = _cur_stage1_idx
+
         # 5. Compute obs-derived features
         rel_goal_xy = (self._goal[:2] - pos[:2]).astype(np.float32)
         dist_xy = float(np.linalg.norm(rel_goal_xy))
@@ -396,6 +430,11 @@ class TrainManager:
             goal_xy_radius=self._goal_xy_radius,
         )
 
+        # Snap dfa_q to dfa_N when goal reached — ensures dfa=1.0 only at actual goal,
+        # not after last pillar/waypoint (fixes false dfa=1.0 saturation before goal).
+        if done_reason in ("goal_xy", "goal_3d", "success"):
+            self._dfa_q = self._dfa_N
+
         # 6. Build StepState and compute reward
         step_state = StepState(
             pos=pos,
@@ -406,7 +445,7 @@ class TrainManager:
             action=np.asarray(raw_action, dtype=np.float32),
             step_count=self._step_count,
             global_step=self._global_step,
-            stage_index=(0 if self.ecfg.freeze_vz else (1 if self._pillar_manager._p.num_pillars == 0 else 2)),
+            stage_index=(0 if self.ecfg.freeze_vz else (1 if self._pillar_manager._actual_num_pillars == 0 else 2)),
             dist_xy=dist_xy,
             prev_dist_xy=self._prev_dist_xy,
             nearest_pillar_dist=pillar_snap.nearest_dist if np.isfinite(pillar_snap.nearest_dist) else None,
@@ -422,13 +461,14 @@ class TrainManager:
             is_truncated=truncated,
             goal=self._goal,
             start=self._start,
-            num_pillars=self._pillar_manager._p.num_pillars,
+            num_pillars=self._pillar_manager._actual_num_pillars,
             horizontal_speed=horizontal_speed,
             final_yaw_rate=action_out.yaw_rate,
             yaw_error=yaw_error,
             dfa_q=self._dfa_q,
             dfa_N=self._dfa_N,
             dfa_q_prev=self._dfa_q_prev,
+            stage1_waypoint_advance=_stage1_advance,
         )
 
         reward, components = self._reward_manager.compute(step_state)
@@ -573,7 +613,7 @@ class TrainManager:
     def _update_goal_xy_radius(self) -> None:
         """Lookup schedule in ecfg and update goal_xy_radius. Source: old drone_env.py L7281."""
         e = self.ecfg
-        step = int(self._global_step)
+        step = max(0, int(self._global_step) - int(self._stage_start_step))
         idx = 0
         for i, start_step in enumerate(e.goal_xy_radius_schedule_steps):
             if step >= int(start_step):
@@ -749,10 +789,24 @@ class TrainManager:
             _fence_warn( sy, -cy),  # right
         ], dtype=np.float32)
 
-        dfa_progress = np.array(
-            [float(self._dfa_q) / float(max(self._dfa_N, 1))],
-            dtype=np.float32,
-        )
+        # obs[30]: hybrid DFA progress — discrete milestone + continuous within-segment
+        # (dfa_q + t_segment) / dfa_N: smooth for MLP, still encodes which pillar region
+        if self._dfa_q >= self._dfa_N:
+            _dfa_val = 1.0
+        else:
+            _q = self._dfa_q
+            _cvec = self._goal[:2] - self._start[:2]
+            _cnorm = float(np.linalg.norm(_cvec)) + 1e-8
+            _cdir = _cvec / _cnorm
+            _t_drone = float(np.dot(ekf_pos[:2] - self._start[:2], _cdir))
+            _bounds = self._dfa_segment_t_boundaries
+            _t_s = _bounds[_q] if _q < len(_bounds) else _cnorm
+            _t_e = _bounds[_q + 1] if _q + 1 < len(_bounds) else _cnorm
+            _seg_len = _t_e - _t_s
+            _t_cap = 1.0 - 1.0 / float(max(self._dfa_N, 2))
+            _t_seg = max(0.0, min(_t_cap, (_t_drone - _t_s) / _seg_len)) if _seg_len > 1e-6 else 0.0
+            _dfa_val = min(1.0, float(_q + _t_seg) / float(max(self._dfa_N, 1)))
+        dfa_progress = np.array([_dfa_val], dtype=np.float32)
 
         state = np.concatenate([
             vel_flu_n,                                  # [0:3]
@@ -858,6 +912,31 @@ class TrainManager:
     # ------------------------------------------------------------------ #
     # Misc utilities                                                      #
     # ------------------------------------------------------------------ #
+
+    def _compute_dfa_segment_boundaries(self) -> list:
+        """Corridor t-boundaries for each DFA segment: [0, t_p1, t_p2, ..., corridor_norm].
+        Used to compute smooth hybrid obs[30] = (dfa_q + t_within_segment) / dfa_N.
+        """
+        corridor_vec = self._goal[:2] - self._start[:2]
+        corridor_norm = float(np.linalg.norm(corridor_vec)) + 1e-8
+        corridor_dir = corridor_vec / corridor_norm
+        if self._dfa_use_corridor:
+            active_names = self._pillar_manager._active_corridor_pillar_names
+            t_vals = [
+                float(np.dot(
+                    np.array([float(m["x"]), float(m["y"])], dtype=np.float32) - self._start[:2],
+                    corridor_dir,
+                ))
+                for m in self._pillar_manager.last_pillar_metadata
+                if str(m.get("name", "")) in active_names
+            ]
+        else:
+            t_vals = [
+                float(np.dot(wp - self._start[:2], corridor_dir))
+                for wp in self._pillar_manager._stage1_sgs_xy
+            ]
+        t_vals.sort()
+        return [0.0] + t_vals + [corridor_norm]
 
     def _fence_margin_xy(self, pos_xy: np.ndarray) -> float:
         """Minimum distance to XY fence boundary."""

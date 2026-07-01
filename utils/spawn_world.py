@@ -57,6 +57,54 @@ def poisson_disk(n, region, min_dist, max_tries=5000, exclusion_zones=None):
 
     return np.array(pts)
 
+def make_disc_marker_sdf(name, x, y, r, g, b, radius=0.5, height=0.08):
+    return f"""
+<sdf version='1.9'>
+    <model name='{name}'>
+    <static>true</static>
+    <pose>{x} {y} {height/2} 0 0 0</pose>
+    <link name='link'>
+<visual name='v'>
+<geometry><cylinder>
+<radius>{radius}</radius><length>{height}</length>
+</cylinder></geometry>
+<material><diffuse>{r} {g} {b} 1</diffuse><ambient>{r*0.5} {g*0.5} {b*0.5} 1</ambient></material>
+</visual>
+</link>
+</model>
+</sdf>"""
+
+
+def spawn_disc_marker(name, x, y, r, g, b, radius=0.5, world_name="default", env=None):
+    sdf_raw = make_disc_marker_sdf(name, x, y, r, g, b, radius=radius)
+    client = _client_from_env(env)
+    if client is not None and client.available():
+        try:
+            ok = client.create_sdf(world_name=world_name, name=name, sdf=sdf_raw, timeout_ms=3000)
+            if ok:
+                return True
+        except Exception:
+            pass
+    # CLI fallback
+    sdf_escaped = sdf_raw.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n')
+    try:
+        import subprocess
+        env_vars = dict(os.environ)
+        if env and env.get("GZ_PARTITION"):
+            env_vars["GZ_PARTITION"] = env["GZ_PARTITION"]
+        subprocess.run(
+            ["gz", "service", "-s", f"/world/{world_name}/create",
+             "--reqtype", "gz.msgs.EntityFactory",
+             "--reptype", "gz.msgs.Boolean",
+             "--timeout", "3000",
+             "--req", f'name: "{name}" sdf: "{sdf_escaped}"'],
+            timeout=5.0, capture_output=True, env=env_vars,
+        )
+    except Exception:
+        pass
+    return False
+
+
 def make_pillar_sdf(name, x, y, radius, height):
     return f"""
 <sdf version='1.9'>
@@ -252,16 +300,15 @@ def move_entities_batch(poses, world_name="default", env=None, timeout_ms=None):
         "--req", req,
     ]
 
-    # max_retries = 3
-    # last_result = None
-    # for attempt in range(1, max_retries + 1):
-    #     result = subprocess.run(cmd, capture_output=True, text=True, env=env)
-    #     last_result = result
-    #     if result.returncode == 0 and "data: true" in (result.stdout or "").lower():
-    #         return True
-    #     if attempt < max_retries:
-    #         time.sleep(0.25 * attempt)
-    return True
+    max_retries = 3
+    last_result = None
+    for attempt in range(1, max_retries + 1):
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        last_result = result
+        if result.returncode == 0 and "data: true" in (result.stdout or "").lower():
+            return True
+        if attempt < max_retries:
+            time.sleep(0.25 * attempt)
 
     raise RuntimeError(
         "Gazebo service failed to batch move entities. "

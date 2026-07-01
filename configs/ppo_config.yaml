@@ -6,7 +6,7 @@ seed: 42
 # Core PPO
 n_steps: 1024
 batch_size: 128
-n_epochs: 10
+n_epochs: 3
 learning_rate: 1.0e-4
 
 # ── CNN cold-start per-group LR ────────────────────────────────────────────────
@@ -27,7 +27,7 @@ learning_rate: 1.0e-4
 #     • episode length không giảm dù đã lâu
 #     → Tăng lên 1.0 (default)
 #
-cnn_coldstart_cnn_lr_scale: 1.0     # CNN+cnn_fc:  1.0 × 1e-4 = 1e-4  | range gợi ý: 0.3–1.0
+cnn_coldstart_cnn_lr_scale: 0.30     # CNN+cnn_fc:  0.30 × 1e-4 = 3.0e-5 | range gợi ý: 0.3–1.0
 
 # ── cnn_coldstart_state_lr_scale  (state_fc) ────────────────────────────────
 #   state_fc đã encode nav policy (vel/goal/yaw) qua 500k bước stage 1.
@@ -75,7 +75,7 @@ max_grad_norm: 0.5
 total_timesteps: 10_000_000
 n_envs: 1
 log_dir: "runs/"
-checkpoint_freq: 10_000
+checkpoint_freq: 5_000
 
 # Curriculum stages
 # Optional env_overrides keys map directly to EnvConfig fields — any field can be overridden.
@@ -87,6 +87,9 @@ checkpoint_freq: 10_000
 curriculum:
   - stage: 0
     num_pillars: 0
+    min_pillars: 0
+    max_pillars: 0
+    uniform_pillar: false
     min_steps: 295_000
     freeze_vz: false             # horizontal nav only — vz locked to 0
     freeze_cnn: true             # no pillars — CNN branch frozen, train state MLP only
@@ -102,10 +105,16 @@ curriculum:
     mass_scale_min: 1.0          # no mass randomisation — clean dynamics
     mass_scale_max: 1.0
     wind_speed_max: 0.0          # no wind
+    # Goal radius curriculum (stage-relative steps): start large, ramp down
+    goal_xy_radius_schedule_values: [3.0, 1.5, 1.0, 0.5]
+    goal_xy_radius_schedule_steps:  [0, 50_000, 130_000, 220_000]
 
   - stage: 1
     num_pillars: 0
-    min_steps: 500_000
+    min_pillars: 0
+    max_pillars: 0
+    uniform_pillar: false
+    min_steps: 530_000
     freeze_vz: false             # vz unlocked — full altitude control
     freeze_cnn: true             # no pillars — CNN branch frozen, train state MLP only
     use_symbolic_extractor: true # 3-channel kinematic BEV (default False = 1-channel depth)
@@ -120,10 +129,18 @@ curriculum:
     mass_scale_min: 0.95        # no mass randomisation — altitude control cần ổn định trước
     mass_scale_max: 1.05
     wind_speed_max: 0.5          # no wind
+    # Goal radius curriculum (stage-relative steps): start large, ramp down
+    goal_xy_radius_schedule_values: [3.0, 1.5, 1.0, 0.5]
+    goal_xy_radius_schedule_steps:  [0, 50_000, 150_000, 300_000]
 
   - stage: 2
-    num_pillars: 3
+    num_pillars: 2
+    min_pillars: 2
+    max_pillars: 3
+    uniform_pillar: false  
     min_steps: 500_000
+    pre_episode_auto_yaw_enabled: true
+    yaw_curriculum_steps: 300000  # 0→π over first 300k steps; full random after
     use_symbolic_extractor: true # 3-channel kinematic BEV (default False = 1-channel depth)
     # Stage 2: per-episode delay [0,1] + bắt đầu mass/wind nhẹ
     obs_noise_pos_std: 0.08
@@ -137,9 +154,15 @@ curriculum:
     mass_scale_min: 0.95         # ±5% mass variation
     mass_scale_max: 1.05
     wind_speed_max: 0.5          # up to 0.5 m/s wind
+    # Goal radius curriculum (stage-relative steps): start large, ramp down
+    goal_xy_radius_schedule_values: [3.0, 2.0, 1.5, 1.0, 0.5]
+    goal_xy_radius_schedule_steps:  [0, 50_000, 150_000, 300_000, 420_000]
 
   - stage: 3
-    num_pillars: 5
+    num_pillars: 3
+    min_pillars: 3
+    max_pillars: 6
+    uniform_pillar: true
     min_steps: 500_000
     use_symbolic_extractor: true # 3-channel kinematic BEV (default False = 1-channel depth)
     # Stage 3: per-episode delay [0,2] — drone phải robust với nhiều mức latency
@@ -156,7 +179,10 @@ curriculum:
     wind_speed_max: 1.0          # up to 1.0 m/s wind
 
   - stage: 4
-    num_pillars: 10
+    num_pillars: 6
+    min_pillars: 6
+    max_pillars: 12
+    uniform_pillar: true
     min_steps: 500_000
     use_symbolic_extractor: true # 3-channel kinematic BEV (default False = 1-channel depth)
     # Stage 4: gần thực tế — ESC jitter + VIO drift + delay + mass + wind đồng thời
@@ -173,7 +199,10 @@ curriculum:
     wind_speed_max: 2.0          # up to 2.0 m/s wind
 
   - stage: 5
-    num_pillars: 20
+    num_pillars: 12
+    min_pillars: 12
+    max_pillars: 22
+    uniform_pillar: true
     min_steps: 0
     use_symbolic_extractor: true # 3-channel kinematic BEV (default False = 1-channel depth)
     # Stage 5: full sim-to-real — giữ nguyên stage 4

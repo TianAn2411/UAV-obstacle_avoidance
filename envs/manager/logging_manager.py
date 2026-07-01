@@ -367,7 +367,6 @@ class LoggingManager:
             f"lateral={s.get('lateral', 0.0):.2f} "
             f"near_fence={s.get('near_fence', 0.0):.2f} "
             f"start_zone={s.get('start_zone', 0.0):.2f} "
-            f"ground={s.get('ground', 0.0):.2f} "
             f"altitude={s.get('altitude', 0.0):.2f} "
             f"time={s.get('time', 0.0):.2f}"
         )
@@ -397,7 +396,6 @@ class LoggingManager:
                 f"velocity_goal={s.get('velocity_goal', 0.0):.2f} "
                 f"time={s.get('time', 0.0):.2f} "
                 f"altitude={s.get('altitude', 0.0):.2f} "
-                f"ground={s.get('ground', 0.0):.2f} "
                 f"smooth={s.get('smooth', 0.0):.2f} "
                 f"speed_penalty={s.get('speed_penalty', 0.0):.2f} "
                 f"fall_penalty={s.get('fall_penalty', 0.0):.2f} "

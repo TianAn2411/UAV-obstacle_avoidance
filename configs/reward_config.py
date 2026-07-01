@@ -41,43 +41,33 @@ class RewardConfig:
     rm_subgoal_bonus: float = 8.0         # fired once per q → q+1 advance
 
     # ------------------------------------------------------------------ #
-    # Time penalty — escalating per step                                  #
+    # Time penalty — flat rate per step                                   #
     # ------------------------------------------------------------------ #
-    # Accumulates each step. Steps 0-170: base only. After 170: base+step170, etc.
-    # Example: at step 200 → -0.08 + -0.12 = -0.20/step
-    # Example: at step 400 → -0.08 + -0.12 + -0.13 + -0.15 = -0.48/step
-    # Only escalates when num_pillars > 0 (stage 0-1: base only).
     time_penalty_base: float = -0.09
-    time_penalty_step170: float = -0.12
-    time_penalty_step250: float = -0.13
-    time_penalty_step350: float = -0.15
-    time_penalty_step450: float = -0.20
 
     # ------------------------------------------------------------------ #
-    # Altitude penalty — per step, linear outside safe band               #
+    # Altitude reward/penalty — piecewise linear per step                 #
     # ------------------------------------------------------------------ #
-
-    # alt_# r = coef * (alt_min - alt)  if alt < alt_min  (too low)
-    # r = coef * (alt - alt_max)  if alt > alt_max  (too high)min / alt_max come from EnvConfig.
-    # Example: drone at 1.0m, alt_min=2.0 → -2.5 * 1.0 = -2.5/step
+    # z < alt_min                          → heavy penalty (below_min_coef)
+    # alt_min ≤ z < alt_suboptimal_low_thresh → light penalty (suboptimal_low)
+    # alt_suboptimal_low_thresh ≤ z < alt_optimal_low → 0
+    # alt_optimal_low ≤ z ≤ alt_optimal_high → flat reward (alt_optimal_reward)
+    # alt_optimal_high < z ≤ alt_suboptimal_high_thresh → 0
+    # alt_suboptimal_high_thresh < z ≤ alt_max → light penalty (above_suboptimal)
+    # z > alt_max                          → heavy penalty (above_max_coef)
     alt_below_min_coef: float = -2.5
     alt_above_max_coef: float = -1.5
 
+    alt_suboptimal_low_thresh: float = 2.5   # 0.8–2.5m: light penalty zone
+    alt_suboptimal_low_coef: float = -0.7
 
-    # Gaussian reward for staying near optimal altitude
-    # r = alt_optimal_coef * exp(-(z - alt_optimal_target)^2 / (2 * alt_optimal_sigma^2))
-    # Peaks at alt_optimal_target, decays with distance
-    # Example: z=4.0m, target=4.0, sigma=0.5, coef=0.5 → +0.5/step
-    # Example: z=5.0m, target=4.0, sigma=0.5, coef=0.5 → +0.135/step
-    alt_optimal_coef: float = 0.05  # Gaussian peak at alt_optimal_target
-    alt_optimal_target: float = 4.0  # optimal altitude (m)
-    alt_optimal_sigma: float = 1.2  # wider gaussian — reaches down to 2.5m with ~0.28/step
+    alt_optimal_low: float = 4.0             # flat reward zone lower bound
+    alt_optimal_high: float = 5.5            # flat reward zone upper bound
+    alt_optimal_reward: float = 0.30         # +0.30/step when in [4.0, 5.5]m
+    alt_ramp_coef: float = 0.10              # ramp peak: 0→0.10 below, 0.10→0 above optimal zone
 
-    # Suboptimal altitude penalty — lighter than below_min
-    # Penalizes alt_min to alt_suboptimal_low_thresh (e.g., 2.0-2.5m: allowed but inefficient)
-    # Example: z=2.2m → -0.7 * (2.5-2.2) = -0.21/step
-    alt_suboptimal_low_thresh: float = 2.0  # below this = suboptimal — aligned with freeze_vz_band_low
-    alt_suboptimal_low_coef: float = -0.7   # stronger push out of low zone
+    alt_suboptimal_high_thresh: float = 6.0  # 6.0–7.0m: light penalty zone
+    alt_above_suboptimal_coef: float = -0.5
 
     # ------------------------------------------------------------------ #
     # Action smoothness — per step                                        #
@@ -121,7 +111,7 @@ class RewardConfig:
     #   cos=-1.0 (180°) → -1.2 penalty (max)
     stage2_yaw_good_thresh: float = 0.9275        # cos threshold ≈ 21.9° — looser than stage1
     stage2_yaw_forward_bonus_coef: float = 0.20
-    stage2_yaw_forward_penalty_coef: float = 1.2
+    stage2_yaw_forward_penalty_coef: float = 0.5
 
     stage2_backwards_yaw_penalty_coef: float = 0.25
     stage2_backwards_yaw_dot_thresh: float = -0.20
@@ -265,6 +255,7 @@ class RewardConfig:
     stage1_subgoal_dist_min: float = 8.0
     stage1_subgoal_dist_max: float = 25.0
     stage1_subgoal_count: int = 6
+    stage1_sg_bonus_pillar_stage: float = 0.0  # zeroed: redundant with PBRS phi_dist; straight-line waypoints conflict with bypass trajectories
 
     # ------------------------------------------------------------------ #
     # Collision course / body clearance — per step, stage2+               #

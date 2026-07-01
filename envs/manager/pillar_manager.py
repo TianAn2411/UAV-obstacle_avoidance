@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 from typing import Optional
@@ -10,6 +11,8 @@ from obstacle_avoidance.configs.env_config import EnvConfig
 from obstacle_avoidance.configs.pillar_config import PillarConfig
 from obstacle_avoidance.configs.reward_config import RewardConfig
 from obstacle_avoidance.utils.bridge_factory import Spawner
+
+logger = logging.getLogger("obstacle_avoidance")
 
 
 @dataclass
@@ -43,11 +46,13 @@ class PillarManager:
 
         self._pool_initialized: bool = False
         self._pool_names: list[str] = []
+        self._actual_num_pillars: int = 0
 
         self._reset_episode_state()
 
     def _reset_episode_state(self) -> None:
         """Reset all per-episode tracking state."""
+        self._actual_num_pillars = 0
         self.last_pillar_metadata: list[dict] = []
         self.pillar_pass_states: dict[str, dict] = {}
         self.prev_nearest_dist: Optional[float] = None
@@ -58,11 +63,11 @@ class PillarManager:
         self._episode_start_xy: np.ndarray = np.zeros(2, dtype=np.float32)
         self._episode_goal_xy: np.ndarray = np.zeros(2, dtype=np.float32)
 
-        # Bypass subgoal state
-        self._bypass_sgs_xy: list[np.ndarray] = []
-        self._bypass_reached: list[bool] = []
-        self._bypass_near_rewarded: list[bool] = []
-        self._bypass_idx: int = 0
+        # Bypass subgoal state (groups: each group = all valid sides for one corridor pillar)
+        self._bypass_sg_groups: list[list[np.ndarray]] = []
+        self._bypass_group_reached: list[bool] = []
+        self._bypass_group_near_rewarded: list[bool] = []
+        self._bypass_group_idx: int = 0
 
         # Active corridor pillar tracking (DFA Option B)
         self._active_corridor_pillar_names: set = set()
@@ -101,17 +106,20 @@ class PillarManager:
         self._setup_stage1_subgoals(start, goal)
 
         p = self._p
-        if p.num_pillars == 0:
+        if p.uniform_pillar and p.max_pillars > p.min_pillars:
+            self._actual_num_pillars = int(np.random.randint(p.min_pillars, p.max_pillars + 1))
+        else:
+            self._actual_num_pillars = p.min_pillars if p.min_pillars > 0 else p.num_pillars
+
+        if self._actual_num_pillars == 0:
             self.last_pillar_metadata = []
             return
-
-        self._ensure_pool_initialized()
 
         prefix = f"pillar_env{self._env_id}__"
         sampled = self._sample_pillar_metadata(prefix)
         candidate_metadata = sampled["metadata"]
 
-        # Build candidate_metadata with pool names
+        # Build named_metadata with pool slot names
         named_metadata: list[dict] = []
         for i, m in enumerate(candidate_metadata):
             named_metadata.append({
@@ -122,8 +130,9 @@ class PillarManager:
                 "height": float(m.get("height", p.pillar_pool_height)),
             })
 
-        # Build batch poses: active pillars + park unused pool slots
-        max_pool = max(p.num_pillars, 5)
+        max_pool = p.max_pillars if p.max_pillars > 0 else p.num_pillars
+
+        # Build full batch: active at target, unused at parking
         batch_poses: list[dict] = []
         for m in named_metadata:
             batch_poses.append({
@@ -132,6 +141,7 @@ class PillarManager:
                 "y": float(m["y"]),
                 "z": float(0.5 * m["height"]),
                 "yaw": 0.0,
+                "height": float(m["height"]),
             })
         for i in range(len(named_metadata), max_pool):
             batch_poses.append({
@@ -140,12 +150,32 @@ class PillarManager:
                 "y": float(p.pillar_pool_parking_y),
                 "z": float(0.5 * p.pillar_pool_height),
                 "yaw": 0.0,
+                "height": float(p.pillar_pool_height),
             })
 
-        try:
-            self._spawner.move_pillars_batch(batch_poses)
-        except Exception:
-            pass
+        if not self._pool_initialized:
+            # First episode: spawn each pillar directly at its target/parking position
+            for pose in batch_poses:
+                try:
+                    ok = self._spawner.spawn_pillar(
+                        name=pose["name"],
+                        x=pose["x"],
+                        y=pose["y"],
+                        radius=p.pillar_pool_radius,
+                        height=pose["height"],
+                    )
+                    if not ok:
+                        logger.warning(f"[PILLAR] spawn failed env={self._env_id} name={pose['name']}")
+                except Exception as e:
+                    logger.warning(f"[PILLAR] spawn exception env={self._env_id} name={pose['name']}: {e}")
+            self._pool_names = [pose["name"] for pose in batch_poses]
+            self._pool_initialized = True
+        else:
+            # Subsequent episodes: teleport only
+            try:
+                self._spawner.move_pillars_batch(batch_poses)
+            except Exception as e:
+                logger.warning(f"[PILLAR] move_pillars_batch failed env={self._env_id}: {e}")
 
         self.last_pillar_metadata = named_metadata
         self._setup_bypass_subgoals(start, goal)
@@ -250,7 +280,7 @@ class PillarManager:
 
         # Pillar pass detection
         pillars_passed_count: int = 0
-        for state in self.pillar_pass_states.values():
+        for pname, state in self.pillar_pass_states.items():
             if not state["entered"] or state.get("rewarded", False):
                 continue
             if float(state["min_dist"]) <= p.pillar_collision_margin:
@@ -264,7 +294,7 @@ class PillarManager:
             state["rewarded"] = True
             state["pass_step"] = int(step_count)
             self.avoided_pillar_count += 1
-            if name in self._active_corridor_pillar_names:
+            if pname in self._active_corridor_pillar_names:
                 self._corridor_avoided_count += 1
 
         clearance_improved = (
@@ -392,31 +422,6 @@ class PillarManager:
     def _pillar_pool_name(self, index: int) -> str:
         return f"pillar_env{self._env_id}__{index}"
 
-    def _ensure_pool_initialized(self) -> None:
-        """Spawn pool pillars at parking positions if not already done."""
-        if self._pool_initialized:
-            return
-        p = self._p
-        max_pool = max(p.num_pillars, 5)
-        pool_names: list[str] = []
-        for i in range(max_pool):
-            name = self._pillar_pool_name(i)
-            pool_names.append(name)
-            park_x = float(p.pillar_pool_parking_x + i)
-            park_y = float(p.pillar_pool_parking_y)
-            try:
-                if hasattr(self._spawner, "spawn_pillar"):
-                    self._spawner.spawn_pillar(
-                        name=name,
-                        x=park_x,
-                        y=park_y,
-                        radius=p.pillar_pool_radius,
-                        height=p.pillar_pool_height,
-                    )
-            except Exception:
-                pass
-        self._pool_names = pool_names
-        self._pool_initialized = True
 
     def _sample_pillar_metadata(self, prefix: str) -> dict:
         """Sample pillar placement metadata with retry logic. Port from old drone_env.py L1320."""
@@ -432,7 +437,7 @@ class PillarManager:
         actual_count = 0
         metadata: list[dict] = []
 
-        min_required_pillars = max(2, p.num_pillars - 2)
+        min_required_pillars = max(1, self._actual_num_pillars - 2)
 
         for attempt in range(1, 4):
             attempt_corridor = corridor_half_width
@@ -447,7 +452,7 @@ class PillarManager:
 
             try:
                 metadata = self._spawner.sample_random_field_metadata(
-                    num_pillars=p.num_pillars,
+                    num_pillars=self._actual_num_pillars,
                     start=start,
                     goal=goal,
                     name_prefix=prefix,
@@ -491,10 +496,10 @@ class PillarManager:
 
     def _setup_bypass_subgoals(self, start: np.ndarray, goal: np.ndarray) -> None:
         """Set up bypass subgoals. Port from old drone_env.py L1503-1613."""
-        self._bypass_sgs_xy = []
-        self._bypass_reached = []
-        self._bypass_near_rewarded = []
-        self._bypass_idx = 0
+        self._bypass_sg_groups = []
+        self._bypass_group_reached = []
+        self._bypass_group_near_rewarded = []
+        self._bypass_group_idx = 0
         self._active_corridor_pillar_names = set()
         self._active_corridor_pillar_count = 0
 
@@ -573,24 +578,23 @@ class PillarManager:
                 continue
 
             side_candidates.sort(key=lambda item: item["score"], reverse=True)
-            best = side_candidates[0]
-            if best["score"] < 0.0:
+            valid_sides = [s for s in side_candidates if s["score"] >= 0.0]
+            if not valid_sides:
                 continue
 
             candidates.append({
                 "t": t,
-                "xy": best["xy"],
-                "side": best["side"],
+                "group": [s["xy"] for s in valid_sides],
                 "pillar_xy": pillar_xy.astype(np.float32),
-                "margin": best["margin"],
+                "margin": valid_sides[0]["margin"],
             })
 
         candidates.sort(key=lambda c: c["t"])
 
         for cand in candidates[: p.bypass_max_active]:
-            self._bypass_sgs_xy.append(cand["xy"])
-            self._bypass_reached.append(False)
-            self._bypass_near_rewarded.append(False)
+            self._bypass_sg_groups.append(cand["group"])
+            self._bypass_group_reached.append(False)
+            self._bypass_group_near_rewarded.append(False)
 
     def _setup_ring_subgoals(self) -> None:
         """Set up ring subgoals around pillars. Port from old drone_env.py L2205-2252."""
@@ -692,42 +696,44 @@ class PillarManager:
         self._stage1_idx = sum(self._stage1_reached)
         return reward
     def _get_active_bypass_subgoal(self) -> Optional[np.ndarray]:
-        if not self._bypass_sgs_xy:
+        if not self._bypass_sg_groups:
             return None
-        i = self._bypass_idx
-        if i < 0 or i >= len(self._bypass_sgs_xy):
+        i = self._bypass_group_idx
+        if i < 0 or i >= len(self._bypass_sg_groups):
             return None
-        return self._bypass_sgs_xy[i]
+        group = self._bypass_sg_groups[i]
+        return group[0] if group else None
 
     def _update_bypass_subgoals(
         self, pos_xy: np.ndarray
     ) -> tuple[float, int, int]:
         """Update bypass subgoal states and return (reward, hit_near, hit_reach)."""
-        if not self._bypass_sgs_xy:
+        if not self._bypass_sg_groups:
             return 0.0, 0, 0
 
-        i = self._bypass_idx
-        if i < 0 or i >= len(self._bypass_sgs_xy):
+        i = self._bypass_group_idx
+        if i < 0 or i >= len(self._bypass_sg_groups):
             return 0.0, 0, 0
 
         r = self._r
-        sg = self._bypass_sgs_xy[i]
-        d = float(np.linalg.norm(np.asarray(pos_xy, dtype=np.float32) - sg))
+        group = self._bypass_sg_groups[i]
+        pos = np.asarray(pos_xy, dtype=np.float32)
+        min_d = min(float(np.linalg.norm(pos - sg)) for sg in group)
 
         reward = 0.0
         hit_near = 0
         hit_reach = 0
 
-        if d <= float(r.stage2_pillar_bypass_near_radius):
-            if not self._bypass_near_rewarded[i]:
+        if min_d <= float(r.stage2_pillar_bypass_near_radius):
+            if not self._bypass_group_near_rewarded[i]:
                 reward += float(r.stage2_pillar_bypass_near_reward)
-                self._bypass_near_rewarded[i] = True
+                self._bypass_group_near_rewarded[i] = True
                 hit_near = 1
 
-            if not self._bypass_reached[i]:
+            if not self._bypass_group_reached[i]:
                 reward += float(r.stage2_pillar_bypass_reach_reward)
-                self._bypass_reached[i] = True
-                self._bypass_idx = i + 1
+                self._bypass_group_reached[i] = True
+                self._bypass_group_idx = i + 1
                 hit_reach = 1
 
         return reward, hit_near, hit_reach

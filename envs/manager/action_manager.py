@@ -36,14 +36,12 @@ class ActionManager:
         step_count: int,
         altitude: float,
         is_takeoff_phase: bool,
-        num_pillars: int = 0,
     ) -> ActionOutput:
         cfg = self._cfg
         raw = np.asarray(raw_action, dtype=np.float32)
 
-        # --- Velocity limits (pillar mode caps XY speed) ---
-        max_vx = min(cfg.vx_limit, 1.4) if num_pillars > 0 else cfg.vx_limit
-        max_vy = min(cfg.vy_limit, 1.2) if num_pillars > 0 else cfg.vy_limit
+        max_vx = cfg.vx_limit
+        max_vy = cfg.vy_limit
 
         # --- Scale raw [-1,1] → velocity space ---
         target_vx = float(raw[0]) * max_vx

@@ -25,7 +25,7 @@ class DepthStateExtractor(BaseFeaturesExtractor):
         [30]    DFA progress          q/N ∈ [0,1]
 
     Flow:
-        depth → CNN → Linear+SiLU(3136→256) ────────────────────┐
+        depth → CNN → Linear+SiLU(5184→256) ────────────────────┐
                                                                 cat(320) → fusion_fc → LayerNorm → features
         state(31) → Linear+SiLU(31→64) → Linear+SiLU(64→64) ───┘
     """
@@ -44,14 +44,16 @@ class DepthStateExtractor(BaseFeaturesExtractor):
         )
 
         # ── Nhánh CNN (depth) ──────────────────────────────────────────────
+        # k=4,s=2 throughout: 84→41→19→9, flatten=5184
+        # Better near-field resolution vs Atari-style k=8,s=4 (4px→8px in 0-3m zone)
         self.cnn = nn.Sequential(
-            nn.Conv2d(3,  32, kernel_size=8, stride=4), nn.SiLU(),
+            nn.Conv2d(3,  32, kernel_size=4, stride=2), nn.SiLU(),
             nn.Conv2d(32, 64, kernel_size=4, stride=2), nn.SiLU(),
-            nn.Conv2d(64, 64, kernel_size=3, stride=1), nn.SiLU(),
+            nn.Conv2d(64, 64, kernel_size=3, stride=2), nn.SiLU(),
             nn.Flatten(),
         )
         self.cnn_fc = nn.Sequential(
-            nn.Linear(3136, 256),
+            nn.Linear(5184, 256),
             nn.SiLU(),
         )
 

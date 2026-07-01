@@ -41,10 +41,10 @@ class NoiseManager:
         self.ecfg = ecfg
         self._rng = rng
 
-        _delay = max(0, int(ecfg.action_delay_steps))
+        self._current_delay: int = max(0, int(ecfg.action_delay_steps))
         self._delay_buf: deque = deque(
-            [np.zeros(4, dtype=np.float32)] * (_delay + 1),
-            maxlen=_delay + 1,
+            [np.zeros(4, dtype=np.float32)] * (self._current_delay + 1),
+            maxlen=self._current_delay + 1,
         )
         self._mass_scale: float = 1.0
 
@@ -63,10 +63,16 @@ class NoiseManager:
 
     def reset_episode(self, bridge: "ROSBridge | None" = None) -> None:
         """Sample per-episode randomisation. Call once at the start of every episode."""
-        # Action delay buffer → all zeros
-        self._delay_buf.clear()
-        for _ in range(self._delay_buf.maxlen):
-            self._delay_buf.append(np.zeros(4, dtype=np.float32))
+        # Sample delay for this episode
+        min_d = max(0, int(self.ecfg.action_delay_steps))
+        max_d = max(min_d, int(self.ecfg.action_delay_steps_max))
+        self._current_delay = int(self._rng.integers(min_d, max_d + 1)) if max_d > min_d else min_d
+
+        # Recreate delay buffer with sampled size (cheap at episode boundary)
+        self._delay_buf = deque(
+            [np.zeros(4, dtype=np.float32)] * (self._current_delay + 1),
+            maxlen=self._current_delay + 1,
+        )
 
         # Mass scale: uniform in [mass_scale_min, mass_scale_max]
         lo, hi = float(self.ecfg.mass_scale_min), float(self.ecfg.mass_scale_max)

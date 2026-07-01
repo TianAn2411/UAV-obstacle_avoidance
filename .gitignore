@@ -28,6 +28,9 @@ CLAUDE.md
 
 
 plans/
+
+# Claude Code local settings (machine-specific)
+.claude/settings.local.json
 docs/
 .vscode/
 .understand-anything/
@@ -42,3 +45,4 @@ ppo_drone_stage*.zip
 bev_diag2.py
 test*.py
 *.sh
+README_TianAn.md

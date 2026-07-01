@@ -484,12 +484,20 @@ class ResetManager:
         self.rescue_success_count += 1
         return self.continuous_episode_reset(reason=reason)
 
-    def pre_episode_auto_yaw_to_goal(self, goal: np.ndarray) -> None:
+    def pre_episode_auto_yaw_to_goal(self, goal: np.ndarray, assist_ratio: float = 1.0) -> None:
         """
         Rotate drone in-place toward goal before episode starts.
+        assist_ratio in [0, 1]: fraction of yaw_error_to_goal to correct.
+          1.0 = full assist (face goal exactly)
+          0.5 = rotate halfway
+          0.0 = no rotation (skip)
+        Caller samples assist_ratio ~ Uniform(0, max_assist) each episode,
+        where max_assist shrinks 1→0 over yaw_curriculum_steps.
         Source: old drone_env.py L3710.
         """
         if not self.ecfg.pre_episode_auto_yaw_enabled:
+            return
+        if assist_ratio <= 0.0:
             return
 
         pos = self.bridge.get_gazebo_position()
@@ -501,7 +509,10 @@ class ResetManager:
         if goal_norm <= 1e-6:
             return
 
-        desired_yaw = math.atan2(float(goal_vec_xy[1]), float(goal_vec_xy[0]))
+        current_yaw, _ = self.bridge.get_yaw()
+        goal_dir = math.atan2(float(goal_vec_xy[1]), float(goal_vec_xy[0]))
+        yaw_error_to_goal = self._wrap_pi(goal_dir - float(current_yaw))
+        desired_yaw = float(current_yaw) + assist_ratio * yaw_error_to_goal
         tol_rad = math.radians(float(self.ecfg.pre_episode_auto_yaw_tol_deg))
         t0 = time.monotonic()
 

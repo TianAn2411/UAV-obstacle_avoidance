@@ -7,8 +7,7 @@ venv/
 .env
 
 # Reinforcement Learning & Logs (Stable-Baselines3, Tensorboard)
-runs/
-ckpts/
+runs/env_logs/
 *.zip        # Không push các model PPO đã train (file zip) lên git, trừ model tốt nhất
 *.pth
 *.pt
@@ -45,3 +44,4 @@ bev_diag2.py
 test*.py
 *.sh
 README_TianAn.md
+runs/**/*.txt

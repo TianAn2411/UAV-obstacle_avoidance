@@ -19,10 +19,16 @@ This repo (`obstacle_avoidance/`) must live inside `~/PX4-Autopilot/`.
 
 ### 2. ROS 2 Jazzy
 
-Follow the [official ROS 2 Jazzy install guide](https://docs.ros.org/en/jazzy/Installation/Ubuntu-Install-Debs.html), then:
+Follow the [official ROS 2 Jazzy install guide](https://docs.ros.org/en/jazzy/Installation/Ubuntu-Install-Debs.html), then install the bridge + perception packages (the latter are required by `symbolic_extractor/`, which `train_manager.py`/`bridge_factory.py` depend on — not optional):
 
 ```bash
-sudo apt install ros-jazzy-ros-gz-bridge ros-jazzy-ros-gz-sim
+sudo apt install \
+  ros-jazzy-ros-gz-bridge ros-jazzy-ros-gz-sim \
+  ros-jazzy-sensor-msgs ros-jazzy-sensor-msgs-py \
+  ros-jazzy-std-msgs ros-jazzy-geometry-msgs \
+  ros-jazzy-tf2-ros ros-jazzy-tf2-ros-py \
+  ros-jazzy-message-filters ros-jazzy-cv-bridge
+
 source /opt/ros/jazzy/setup.bash   # add to ~/.bashrc
 ```
 
@@ -81,8 +87,10 @@ cd ~/ros2_ws/src/px4_msgs && git branch
 ```bash
 python3 -m venv ~/drone_rl_env
 source ~/drone_rl_env/bin/activate
-pip install stable-baselines3 gymnasium numpy opencv-python
+pip install -r obstacle_avoidance/requirements.txt
 ```
+
+`requirements.txt` covers both the RL stack (`stable-baselines3`, `gymnasium`, `torch`) and the `symbolic_extractor` perception stack (`numba`, `transforms3d`, `scipy`, `opencv-python`). `rclpy`, `px4_msgs`, and the ROS 2 packages from step 2 are NOT in there — they're apt/colcon, not pip (see step 2 and step 5).
 
 ---
 
@@ -92,10 +100,48 @@ pip install stable-baselines3 gymnasium numpy opencv-python
 |---|---|
 | PX4 Autopilot | `release/1.15` at `~/PX4-Autopilot`, SITL built |
 | Gazebo | Harmonic (`gz-harmonic`) |
-| ROS 2 | Jazzy |
+| ROS 2 | Jazzy — `ros-gz-bridge`, `sensor-msgs(-py)`, `std-msgs`, `geometry-msgs`, `tf2-ros(-py)`, `message-filters`, `cv-bridge` |
 | MicroXRCE-DDS Agent | installed to system |
 | px4_msgs | `release/1.15` branch, built in `~/ros2_ws` |
-| Python venv | `~/drone_rl_env` with `stable-baselines3`, `gymnasium` |
+| Python venv | `~/drone_rl_env`, `pip install -r obstacle_avoidance/requirements.txt` |
+
+---
+
+## Verify Installation
+
+```bash
+# PX4 SITL binary built
+test -f ~/PX4-Autopilot/build/px4_sitl_default/bin/px4 && echo "PX4 OK" || echo "MISSING — run: cd ~/PX4-Autopilot && make px4_sitl"
+
+# Gazebo + MicroXRCE-DDS Agent on PATH
+gz sim --version && command -v MicroXRCEAgent >/dev/null && echo "Gazebo + Agent OK"
+
+# ROS2 apt packages
+dpkg -s ros-jazzy-ros-gz-bridge ros-jazzy-sensor-msgs ros-jazzy-sensor-msgs-py \
+        ros-jazzy-std-msgs ros-jazzy-geometry-msgs ros-jazzy-tf2-ros \
+        ros-jazzy-tf2-ros-py ros-jazzy-message-filters ros-jazzy-cv-bridge \
+        2>&1 | grep -E "Package|Status"
+
+# px4_msgs branch matches PX4 firmware branch
+diff <(cd ~/PX4-Autopilot && git branch --show-current) \
+     <(cd ~/ros2_ws/src/px4_msgs && git branch --show-current) \
+     && echo "px4_msgs branch OK"
+
+# Python deps + ROS2 imports all resolve
+source ~/drone_rl_env/bin/activate
+source /opt/ros/jazzy/setup.bash
+source ~/ros2_ws/install/setup.bash
+python3 -c "
+import stable_baselines3, gymnasium, torch, numpy, scipy, cv2, numba, transforms3d
+import rclpy, tf2_ros, message_filters
+from px4_msgs.msg import VehicleOdometry
+from cv_bridge import CvBridge
+from sensor_msgs_py import point_cloud2
+print('OK — all obstacle_avoidance deps present')
+"
+```
+
+See `symbolic_extractor/README.md` for that submodule's standalone install/verify steps if working on it in isolation.
 
 ---
 

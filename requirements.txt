@@ -2,7 +2,10 @@
 #   source ~/drone_rl_env/bin/activate
 #   pip install -r obstacle_avoidance/requirements.txt
 #
-# Note: rclpy, px4_msgs, cv_bridge are ROS2 packages — install via colcon, not pip.
+# Note: rclpy, px4_msgs, sensor_msgs, std_msgs, geometry_msgs, tf2_ros,
+# message_filters, cv_bridge, sensor_msgs_py are ROS2 packages — install
+# via apt/colcon, not pip. See obstacle_avoidance/symbolic_extractor/README.md
+# "Installation" section for the full apt/colcon setup.
 
 stable-baselines3>=2.8.0
 gymnasium>=1.2.0
@@ -11,3 +14,9 @@ opencv-python==4.10.0.84
 rich>=15.0.0
 PyYAML>=6.0
 torch>=2.11.0
+scipy>=1.13.0
+
+# symbolic_extractor (perception pipeline) deps
+numba>=0.65.0
+transforms3d>=0.4.2
+pytest>=7.4.0

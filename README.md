@@ -17,7 +17,23 @@ make px4_sitl
 
 This repo (`obstacle_avoidance/`) must live inside `~/PX4-Autopilot/`.
 
-### 2. ROS 2 Jazzy
+### 2. Clone this repo (into `~/PX4-Autopilot/`)
+
+GitHub repo name is `UAV-obstacle_avoidance` — clone it as `obstacle_avoidance` (target dir name, not repo name) so it matches the path PX4/train.py expect:
+
+```bash
+cd ~/PX4-Autopilot
+git clone --recursive git@github.com:TianAn2411/UAV-obstacle_avoidance.git obstacle_avoidance
+```
+
+Already cloned without `--recursive`? Pull the `symbolic_extractor` submodule separately:
+
+```bash
+cd ~/PX4-Autopilot/obstacle_avoidance
+git submodule update --init --recursive
+```
+
+### 3. ROS 2 Jazzy
 
 Follow the [official ROS 2 Jazzy install guide](https://docs.ros.org/en/jazzy/Installation/Ubuntu-Install-Debs.html), then install the bridge + perception packages (the latter are required by `symbolic_extractor/`, which `train_manager.py`/`bridge_factory.py` depend on — not optional):
 
@@ -32,13 +48,13 @@ sudo apt install \
 source /opt/ros/jazzy/setup.bash   # add to ~/.bashrc
 ```
 
-### 3. Gazebo Harmonic
+### 4. Gazebo Harmonic
 
 ```bash
 sudo apt install gz-harmonic
 ```
 
-### 4. MicroXRCE-DDS Agent
+### 5. MicroXRCE-DDS Agent
 
 ```bash
 git clone https://github.com/eProsima/Micro-XRCE-DDS-Agent.git
@@ -47,7 +63,7 @@ cmake .. && make -j$(nproc)
 sudo make install
 ```
 
-### 5. px4_msgs ROS 2 package
+### 6. px4_msgs ROS 2 package
 
 > **Important:** `px4_msgs` must match your PX4 firmware branch exactly.
 > Using the wrong branch causes topic type mismatches — the bridge connects
@@ -82,7 +98,7 @@ cd ~/ros2_ws/src/px4_msgs && git branch
 # Both must show: release/1.15
 ```
 
-### 6. Python venv
+### 7. Python venv
 
 ```bash
 python3 -m venv ~/drone_rl_env
@@ -90,7 +106,7 @@ source ~/drone_rl_env/bin/activate
 pip install -r obstacle_avoidance/requirements.txt
 ```
 
-`requirements.txt` covers both the RL stack (`stable-baselines3`, `gymnasium`, `torch`) and the `symbolic_extractor` perception stack (`numba`, `transforms3d`, `scipy`, `opencv-python`). `rclpy`, `px4_msgs`, and the ROS 2 packages from step 2 are NOT in there — they're apt/colcon, not pip (see step 2 and step 5).
+`requirements.txt` covers both the RL stack (`stable-baselines3`, `gymnasium`, `torch`) and the `symbolic_extractor` perception stack (`numba`, `transforms3d`, `scipy`, `opencv-python`). `rclpy`, `px4_msgs`, and the ROS 2 packages from step 3 are NOT in there — they're apt/colcon, not pip (see step 3 and step 6).
 
 ---
 

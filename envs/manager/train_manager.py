@@ -116,7 +116,7 @@ class TrainManager:
         reason = self._last_done_reason or "startup"
 
         # Compute fence margin for classify decision
-        pos_now = self.bridge.get_gazebo_position()
+        pos_now = self.bridge.get_navigation_position()
         fence_margin = self._fence_margin_xy(pos_now[:2]) if np.all(np.isfinite(pos_now)) else 999.0
 
         decision = self._reset_manager.classify_reset(reason, fence_margin=fence_margin)
@@ -249,17 +249,18 @@ class TrainManager:
         self._reward_manager.reset_episode(dist_start=dist_start, dfa_N=self._dfa_N)
         self._reset_manager.on_episode_end(reason)
 
-        synced_pos = self.bridge.get_gazebo_position()
+        synced_pos = self.bridge.get_navigation_position()
+        synced_pos_safe = synced_pos if np.all(np.isfinite(synced_pos)) else self._start.copy()
         self._step_count = 0
         self._prev_stage1_idx = 0
-        self._prev_pos = synced_pos.copy() if np.all(np.isfinite(synced_pos)) else self._start.copy()
+        self._prev_pos = synced_pos_safe.copy()
         self._prev_dist_xy = float(np.linalg.norm(self._goal[:2] - self._prev_pos[:2]))
         self._prev_action = np.zeros(4, dtype=np.float32)
         self._prev_smoothed_action_n = np.zeros(4, dtype=np.float32)
         self._prev_prev_smoothed_action_n = np.zeros(4, dtype=np.float32)
         self._prev_delta_a1 = np.zeros(4, dtype=np.float32)
         self._noise_manager.reset_episode(self.bridge)
-        self._has_been_airborne = bool(float(synced_pos[2]) > self.ecfg.airborne_z)
+        self._has_been_airborne = bool(float(synced_pos_safe[2]) > self.ecfg.airborne_z)
         self._last_done_reason = None
 
         self.bridge.reset_extractor()
@@ -283,11 +284,11 @@ class TrainManager:
         )
 
         self._ep_reward_sum = 0.0
-        dist_to_goal = float(np.linalg.norm(self._goal[:2] - synced_pos[:2]))
+        dist_to_goal = float(np.linalg.norm(self._goal[:2] - synced_pos_safe[:2]))
         self._logging_manager.log_episode_start(
             reset_mode=decision.mode,
             reason=reason,
-            pos=synced_pos,
+            pos=synced_pos_safe,
             dist_xy=dist_to_goal,
         )
 
@@ -320,7 +321,7 @@ class TrainManager:
                 self.bridge.get_yaw()[0],
                 self.bridge.get_angular_velocity(),
             )
-            pos = self.bridge.get_gazebo_position().astype(np.float32)
+            pos = self.bridge.get_navigation_position().astype(np.float32)
             if not np.all(np.isfinite(pos)):
                 pos = self._prev_pos.copy()
             dist_xy = float(np.linalg.norm(self._goal[:2] - pos[:2]))
@@ -337,7 +338,7 @@ class TrainManager:
                                     "dist_xy": dist_xy, "step_count": self._step_count})
 
         # 1. Compute smoothed velocity command
-        pos_now = self.bridge.get_gazebo_position()
+        pos_now = self.bridge.get_navigation_position()
         alt = float(pos_now[2]) if np.all(np.isfinite(pos_now)) else 0.0
         is_takeoff = not self._has_been_airborne
 
@@ -366,7 +367,7 @@ class TrainManager:
             )
 
         # 3. Read new state
-        pos = self.bridge.get_gazebo_position().astype(np.float32)
+        pos = self.bridge.get_navigation_position().astype(np.float32)
         vel = self.bridge.get_linear_velocity().astype(np.float32)
         yaw, _ = self.bridge.get_yaw()
         perception = self.bridge.get_perception()  # (3,84,84) BEV or (1,84,84) depth
@@ -545,7 +546,7 @@ class TrainManager:
         Sample a new goal position. Annulus ramp during warmup, legacy random after.
         Source: old drone_env.py L1172.
         """
-        base_pos = override_start if override_start is not None else self.bridge.get_gazebo_position()
+        base_pos = override_start if override_start is not None else self.bridge.get_navigation_position()
         base_pos = np.asarray(base_pos, dtype=np.float32)
 
         e = self.ecfg

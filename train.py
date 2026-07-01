@@ -39,6 +39,7 @@ from obstacle_avoidance.utils.process_utils import (
     stop_bridge_process,
 )
 from obstacle_avoidance.utils.px4_manager import PX4InstanceManager
+from obstacle_avoidance.state_estimation import OpenVinsConfig, start_openvins_stack
 
 logger = logging.getLogger("obstacle_avoidance")
 
@@ -157,7 +158,9 @@ def make_env(
         os.environ["PX4_INSTANCE"] = str(rank)
         os.environ["GZ_PARTITION"] = partition
 
-        px4_path = os.path.expanduser("~/PX4-Autopilot")
+        project_root = os.path.dirname(os.path.abspath(__file__))
+        default_px4_root = os.path.join(project_root, "external", "PX4-Autopilot")
+        px4_path = os.path.abspath(os.path.expanduser(os.environ.get("PX4_ROOT", default_px4_root)))
         px4_bin = os.path.join(px4_path, "build/px4_sitl_default/bin/px4")
         rootfs_base_dir = os.path.join(px4_path, "build/px4_sitl_default/rootfs")
         rootfs_dir = os.path.join(rootfs_base_dir, str(rank))
@@ -167,7 +170,7 @@ def make_env(
             raise RuntimeError(
                 f"PX4 binary not found: {px4_bin}\n"
                 "Run this first:\n"
-                "  cd ~/PX4-Autopilot && make px4_sitl"
+                f"  cd {px4_path} && make px4_sitl"
             )
 
         model_path = os.path.join(px4_path, "Tools/simulation/gz/models")
@@ -200,7 +203,12 @@ def make_env(
         env_vars["HEADLESS"] = headless
         env_vars["PX4_GZ_RUN"] = "1"
 
-        env_vars["PX4_SIM_MODEL"] = "gz_x500_depth"
+        px4_sim_model = os.environ.get("PX4_SIM_MODEL_OVERRIDE", os.environ.get("PX4_SIM_MODEL", "gz_x500_depth"))
+        env_vars["PX4_SIM_MODEL"] = px4_sim_model
+        env_vars["PX4_SYS_AUTOSTART"] = os.environ.get(
+            "PX4_SYS_AUTOSTART_OVERRIDE",
+            {"gz_x500_depth": "4002", "gz_x500_vision": "4005"}.get(px4_sim_model, "4002"),
+        )
         env_vars["PX4_GZ_WORLD"] = world_name
 
         # PX4_UXRCE_DDS_PORT NOT set — all instances connect to port 8888 (shared agent).
@@ -217,7 +225,8 @@ def make_env(
             f"HEADLESS={headless}"
         )
 
-        model_name = f"x500_depth_{rank}"
+        model_base_name = os.environ.get("PX4_GZ_MODEL_BASENAME", px4_sim_model.removeprefix("gz_"))
+        model_name = f"{model_base_name}_{rank}"
         bridge_processes = []
 
         # 5. Launch clock + depth bridges (+ pose bridge)
@@ -322,6 +331,24 @@ def make_env(
             xrce_proc=None,  # shared agent managed by run_training()
             env_config=ecfg,
         )
+
+        state_estimator_source = os.environ.get("STATE_ESTIMATOR_SOURCE", "gazebo").strip().lower()
+        if state_estimator_source == "openvins":
+            openvins_config = OpenVinsConfig.from_env(project_root=project_root)
+            logger.info(
+                f"[RANK {rank}] state_estimation=openvins "
+                f"config={openvins_config.config_path} "
+                f"imu={openvins_config.imu_topic} "
+                f"cam0={openvins_config.cam0_topic} "
+                f"cam1={openvins_config.cam1_topic}"
+            )
+            for label, proc in start_openvins_stack(
+                config=openvins_config,
+                gz_partition=partition,
+                ros_domain_id=ros_domain,
+            ):
+                bridge_processes.append((label, proc))
+                px4_manager.bridge_processes.append((label, proc))
 
         spawner = make_spawner(
             world=world_name,

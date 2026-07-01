@@ -15,6 +15,10 @@ import os
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from utils.logger import setup_logger
+try:
+    from obstacle_avoidance.state_estimation import OpenVinsConfig, OpenVinsPx4Bridge
+except Exception:
+    from state_estimation import OpenVinsConfig, OpenVinsPx4Bridge
 
 from cv_bridge import CvBridge
 import threading
@@ -115,6 +119,33 @@ class ROSBridge(Node):
             if GzTransportClient is not None
             else None
         )
+        self.state_estimator_source = os.environ.get(
+            "STATE_ESTIMATOR_SOURCE",
+            "gazebo",
+        ).strip().lower()
+        self._state_estimator_allow_gt_fallback = (
+            os.environ.get("STATE_ESTIMATOR_ALLOW_GT_FALLBACK", "0").strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
+        self.state_estimation_config = (
+            OpenVinsConfig.from_env(project_root=project_root)
+            if self.state_estimator_source == "openvins"
+            else None
+        )
+        self._openvins_fallback_to_gazebo_vo = (
+            bool(self.state_estimation_config.fallback_to_gazebo_vo)
+            if self.state_estimation_config is not None
+            else (
+                os.environ.get("OPENVINS_FALLBACK_TO_GAZEBO_VO", "0").strip().lower()
+                in {"1", "true", "yes", "on"}
+            )
+        )
+        self._openvins_reset_prime_source = (
+            self.state_estimation_config.reset_prime_source
+            if self.state_estimation_config is not None
+            else os.environ.get("OPENVINS_RESET_PRIME_SOURCE", "gazebo").strip().lower()
+        )
+        self._allow_gazebo_vo_until = 0.0
 
 
         self.logger.info(
@@ -122,6 +153,7 @@ class ROSBridge(Node):
             f"world={self.world_name} "
             f"px4_ns={self.px4_ns} "
             f"target_system={self.target_system} "
+            f"state_estimator_source={self.state_estimator_source} "
         )
 
         self.cv_bridge = CvBridge()
@@ -296,6 +328,15 @@ class ROSBridge(Node):
             self._failsafe_flags_cb,
             self.qos,
         )
+        self.vio_bridge = None
+        if self.state_estimator_source == "openvins":
+            self.vio_bridge = OpenVinsPx4Bridge(
+                node=self,
+                px4_topic=self._px4_topic,
+                qos=self.qos,
+                logger=self.logger,
+                config=self.state_estimation_config,
+            )
 
         self.keepalive_enabled = False
         self.keepalive_period = float(os.environ.get("KEEPALIVE_PERIOD", "0.05"))  # 20Hz default
@@ -437,7 +478,10 @@ class ROSBridge(Node):
         service RPCs (teleport, pillar spawn) or CPU-starved spin delays.
         Serialized with explicit burst callers via _vo_publish_lock.
         """
-        period = 1.0 / 30.0
+        publish_rate_hz = 30.0
+        if self.state_estimation_config is not None:
+            publish_rate_hz = float(self.state_estimation_config.publish_rate_hz)
+        period = 1.0 / max(30.0, publish_rate_hz)
         next_t = time.monotonic()
         while not self._vo_stop:
             try:
@@ -647,6 +691,14 @@ class ROSBridge(Node):
         Force-publish Gazebo pose as VehicleOdometry for a short period after
         PX4 reset/teleport so EKF initializes from the current Gazebo pose.
         """
+        if self.state_estimator_source == "openvins" and self.vio_bridge is not None:
+            self.vio_bridge.note_reset()
+            if self._openvins_reset_prime_source == "gazebo":
+                self._allow_gazebo_vo_until = max(
+                    float(getattr(self, "_allow_gazebo_vo_until", 0.0)),
+                    time.monotonic() + float(duration) + 0.5,
+                )
+
         if reset_counter:
             self.notify_ekf_teleport(prime_count=30, reset_count=100)
 
@@ -1112,15 +1164,51 @@ class ROSBridge(Node):
             return max(1, int(clock_ns / 1000))
         return max(1, int(time.monotonic() * 1_000_000))
 
+    def _publish_openvins_visual_odometry(self) -> bool:
+        if self.vio_bridge is None:
+            return False
+
+        clock_ns = int(self.get_clock().now().nanoseconds)
+        stamp_us = self._vo_time_us(clock_ns)
+        force_zero_velocity = self._teleport_zero_vel_countdown > 0
+        reset_variance = self._teleport_reset_countdown > 0
+        msg = self.vio_bridge.build_vehicle_odometry(
+            timestamp_us=stamp_us,
+            reset_counter=self._vo_reset_counter,
+            force_zero_velocity=force_zero_velocity,
+            reset_variance=reset_variance,
+        )
+        if msg is None:
+            return False
+
+        if self._teleport_zero_vel_countdown > 0:
+            self._teleport_zero_vel_countdown -= 1
+        if self._teleport_reset_countdown > 0:
+            self._teleport_reset_countdown -= 1
+
+        with self._ros_pub_lock:
+            self.vo_pub.publish(msg)
+        return True
+
     def _publish_visual_odometry(self):
-        """Push Ground Truth Position + Orientation từ Gazebo vào PX4 EKF (NED + EV yaw).
+        """Publish external-vision odometry into PX4 EKF2.
 
         Called from _vo_thread_worker (30Hz) and optionally from burst callers on the
         main thread.
 
-        CRITICAL: This must NEVER skip publishing. PX4 EKF will set failsafe if VIO
-        stream stops for >1-2s. Always publish even if clock/position not ready.
+        With OpenVINS we intentionally stop publishing on timeout so EKF2 does
+        not fuse repeated stale visual odometry.
         """
+        if self.state_estimator_source == "openvins":
+            if self._publish_openvins_visual_odometry():
+                return
+            if self.vio_bridge is not None:
+                self.vio_bridge.maybe_log_status(period_s=5.0)
+
+            allow_reset_prime = time.monotonic() < float(getattr(self, "_allow_gazebo_vo_until", 0.0))
+            if not self._openvins_fallback_to_gazebo_vo and not allow_reset_prime:
+                return
+
         # CRITICAL: Check gz_pose_ready before publishing
         # Without this, stale/uninitialized position is sent → PX4 EKF diverges → failsafe
         if not self.gz_pose_ready:
@@ -1253,6 +1341,9 @@ class ROSBridge(Node):
         EKF FIX 2: Tăng burst count từ (10, 50) lên (30, 100) để đảm bảo
         EKF nhận đủ samples hội tụ position.
         """
+        if self.state_estimator_source == "openvins" and self.vio_bridge is not None:
+            self.vio_bridge.note_reset()
+
         prime_count = max(0, int(prime_count))
         reset_count = max(0, int(reset_count))
 
@@ -1660,6 +1751,31 @@ class ROSBridge(Node):
         """
         with self._gz_lock:
             return self.gz_pos.copy()
+
+    def get_navigation_position(self) -> np.ndarray:
+        """
+        Return the position source used by policy/reward logic.
+
+        In GPS-denied mode this is PX4 EKF/OpenVINS ENU, not Gazebo ground truth.
+        Gazebo fallback is opt-in via STATE_ESTIMATOR_ALLOW_GT_FALLBACK=1.
+        """
+        if self.state_estimator_source == "openvins":
+            pos = self.get_ekf_position_enu()
+            odom_age = time.monotonic() - float(getattr(self, "_last_odom_wall", 0.0))
+            if np.all(np.isfinite(pos)) and odom_age < 1.0:
+                return pos.astype(np.float32)
+
+            if self.vio_bridge is not None:
+                vio_pos = self.vio_bridge.get_position_enu()
+                if vio_pos is not None and np.all(np.isfinite(vio_pos)):
+                    return vio_pos.astype(np.float32)
+
+            if self._state_estimator_allow_gt_fallback:
+                return self.get_gazebo_position()
+
+            return np.full(3, np.nan, dtype=np.float32)
+
+        return self.get_gazebo_position()
 
     def get_linear_velocity(self):
         # PX4 local velocity is in NED frame (North, East, Down).

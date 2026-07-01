@@ -1,0 +1,52 @@
+services:
+  uav-simulation:
+    platform: ${DOCKER_PLATFORM:-linux/amd64}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BASE_IMAGE_PLATFORM: ${DOCKER_PLATFORM:-linux/amd64}
+    image: uav-obstacle-openvins:jazzy
+    container_name: uav_obstacle_openvins_container
+    volumes:
+      - ..:/workspace/obstacle_avoidance
+    ports:
+      - "6080:6080" # noVNC web interface
+      - "5901:5901" # Direct VNC (optional)
+    environment:
+      DISPLAY: ":1"
+      ROS_DOMAIN_ID: "30"
+      RMW_IMPLEMENTATION: "rmw_fastrtps_cpp"
+      UAV_REPO: "/workspace/obstacle_avoidance"
+      EXTERNAL_DIR: "/workspace/obstacle_avoidance/external"
+      PX4_ROOT: "/workspace/obstacle_avoidance/external/PX4-Autopilot"
+      ROS2_WS: "/workspace/obstacle_avoidance/external/ros2_ws"
+      OPENVINS_WS: "/workspace/obstacle_avoidance/external/openvins_ws"
+      PYTHONPATH: "/workspace"
+      STATE_ESTIMATOR_SOURCE: "openvins"
+      OPENVINS_CONFIG_PATH: "/workspace/obstacle_avoidance/configs/openvins/estimator_config.yaml"
+      OPENVINS_ODOM_TOPIC: "/ov_msckf/odomimu"
+      OPENVINS_IMU_TOPIC: "/openvins/imu"
+      OPENVINS_CAM0_TOPIC: "/openvins/cam0/image_raw"
+      OPENVINS_CAM1_TOPIC: "/openvins/cam1/image_raw"
+      OPENVINS_GZ_CAM0_TOPIC: "/openvins/cam0/image_raw"
+      OPENVINS_GZ_CAM1_TOPIC: "/openvins/cam1/image_raw"
+      OPENVINS_USE_STEREO: "1"
+      OPENVINS_MAX_CAMERAS: "2"
+      OPENVINS_PUBLISH_RATE_HZ: "30"
+      OPENVINS_IMU_STAMP_SOURCE: "px4"
+      OPENVINS_TIMEOUT_S: "0.25"
+      OPENVINS_RESET_PRIME_SOURCE: "gazebo"
+      STATE_ESTIMATOR_ALLOW_GT_FALLBACK: "0"
+      OPENVINS_FALLBACK_TO_GAZEBO_VO: "0"
+      HARD_RESET_PX4_ONLY: "0"
+    ipc: host
+    privileged: true
+    shm_size: "2gb"
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    working_dir: /workspace/obstacle_avoidance
+    stdin_open: true
+    tty: true
+    restart: unless-stopped

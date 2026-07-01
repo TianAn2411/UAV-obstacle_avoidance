@@ -1,0 +1,35 @@
+%YAML:1.0
+
+# Approximate x500_depth + OAK-D Lite SITL calibration.
+# IMU is published as ROS FLU base_link from PX4 SensorCombined.
+# Camera model follows Kalibr optical convention: x right, y down, z forward.
+
+cam0:
+  T_cam_imu:
+    - [0.0, -1.0, 0.0, 0.06750]
+    - [0.0, 0.0, -1.0, 0.26078]
+    - [1.0, 0.0, 0.0, -0.13233]
+    - [0.0, 0.0, 0.0, 1.0]
+  cam_overlaps: [1]
+  camera_model: pinhole
+  distortion_coeffs: [0.0, 0.0, 0.0, 0.0]
+  distortion_model: radtan
+  intrinsics: [432.496, 432.496, 319.5, 239.5]
+  resolution: [640, 480]
+  rostopic: /openvins/cam0/image_raw
+  timeshift_cam_imu: 0.0
+
+cam1:
+  T_cam_imu:
+    - [0.0, -1.0, 0.0, -0.00750]
+    - [0.0, 0.0, -1.0, 0.26078]
+    - [1.0, 0.0, 0.0, -0.13233]
+    - [0.0, 0.0, 0.0, 1.0]
+  cam_overlaps: [0]
+  camera_model: pinhole
+  distortion_coeffs: [0.0, 0.0, 0.0, 0.0]
+  distortion_model: radtan
+  intrinsics: [432.496, 432.496, 319.5, 239.5]
+  resolution: [640, 480]
+  rostopic: /openvins/cam1/image_raw
+  timeshift_cam_imu: 0.0

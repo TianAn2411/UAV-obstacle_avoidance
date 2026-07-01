@@ -24,7 +24,11 @@ import numpy as np
 from dataclasses import dataclass, field
 from typing import Optional
 
-sys.path.insert(0, "/home/sw_an/PX4-Autopilot")
+import os
+for path in ["/workspace/PX4-Autopilot", "/root/PX4-Autopilot", "/home/sw_an/PX4-Autopilot"]:
+    if os.path.exists(path):
+        sys.path.insert(0, path)
+        break
 
 from obstacle_avoidance.configs.reward_config import RewardConfig
 from obstacle_avoidance.configs.env_config import EnvConfig
@@ -502,11 +506,9 @@ def test_E_edge_cases():
     rm = fresh_rm()
     s = make_state(pos=START.copy())
     _, c = rm.compute(s)
-    all_ok &= check(c.progress == 0.0, "E6 c.progress = 0 (removed)", f"{c.progress}")
-    all_ok &= check(c.velocity_goal == 0.0, "E7 c.velocity_goal = 0 (removed)", f"{c.velocity_goal}")
-    all_ok &= check(c.stage1_subgoal == 0.0 and c.bypass_subgoal == 0.0 and c.ring_subgoal == 0.0,
-                    "E8 old subgoal components = 0",
-                    f"s1={c.stage1_subgoal}, bypass={c.bypass_subgoal}, ring={c.ring_subgoal}")
+    # E6-E8: Old components have been removed from RewardComponents dataclass
+    removed_ok = not any(hasattr(c, attr) for attr in ["progress", "velocity_goal", "stage1_subgoal", "bypass_subgoal", "ring_subgoal"])
+    all_ok &= check(removed_ok, "E6-E8 old components are removed from RewardComponents")
 
     return all_ok
 

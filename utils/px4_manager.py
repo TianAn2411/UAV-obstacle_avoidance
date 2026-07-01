@@ -26,6 +26,13 @@ except Exception:
 logger = logging.getLogger(__name__)
 
 
+def _default_autostart_for_model(sim_model: str) -> str:
+    return {
+        "gz_x500_depth": "4002",
+        "gz_x500_vision": "4005",
+    }.get(sim_model, "4002")
+
+
 class PX4InstanceManager:
     """
     Manages exactly one PX4 instance.
@@ -65,6 +72,8 @@ class PX4InstanceManager:
         self.px4_bin = px4_bin
         self.rootfs_dir = rootfs_dir
         self.env_vars = env_vars.copy()
+        self.sim_model = self.env_vars.get("PX4_SIM_MODEL", "gz_x500_depth")
+        self.sys_autostart = self.env_vars.get("PX4_SYS_AUTOSTART", _default_autostart_for_model(self.sim_model))
 
         self.model_name = model_name
         self.world = world
@@ -104,14 +113,14 @@ class PX4InstanceManager:
 
         if gz_run:
             self.env_vars["PX4_GZ_MODEL_POSE"] = self.start_pose
-            self.env_vars["PX4_SIM_MODEL"] = "gz_x500_depth"
+            self.env_vars["PX4_SIM_MODEL"] = self.sim_model
             self.env_vars.pop("PX4_GZ_MODEL_NAME", None)
             self.env_vars.pop("PX4_SYS_AUTOSTART", None)
         else:
             # Reconnect to the existing Gazebo model. px4-rc.simulator chooses
             # attach mode only when PX4_GZ_MODEL_NAME is set and PX4_SIM_MODEL is absent.
             self.env_vars["PX4_GZ_MODEL_NAME"] = self.model_name
-            self.env_vars["PX4_SYS_AUTOSTART"] = "4002"
+            self.env_vars["PX4_SYS_AUTOSTART"] = self.sys_autostart
             self.env_vars.pop("PX4_SIM_MODEL", None)
             self.env_vars.pop("PX4_GZ_MODEL_POSE", None)
 

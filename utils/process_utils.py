@@ -8,6 +8,7 @@ import logging
 import os
 import signal
 import subprocess
+from dataclasses import replace
 
 logger = logging.getLogger(__name__)
 
@@ -229,3 +230,58 @@ def start_gz_lidar_bridge(
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
+
+
+def start_gz_openvins_camera_bridges(
+    gz_partition: str,
+    ros_domain_id: int,
+    cam0_topic: str = "/openvins/cam0/image_raw",
+    cam1_topic: str = "/openvins/cam1/image_raw",
+) -> list[tuple[str, subprocess.Popen]]:
+    """Compatibility wrapper: VIO launch logic lives in state_estimation.runtime."""
+    try:
+        from obstacle_avoidance.state_estimation import OpenVinsConfig, start_openvins_camera_bridges
+    except Exception:
+        from state_estimation import OpenVinsConfig, start_openvins_camera_bridges
+
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    cfg = replace(
+        OpenVinsConfig.from_env(project_root=project_root),
+        cam0_topic=cam0_topic,
+        cam1_topic=cam1_topic,
+    ).validated()
+    return start_openvins_camera_bridges(
+        config=cfg,
+        gz_partition=gz_partition,
+        ros_domain_id=ros_domain_id,
+    )
+
+
+def start_openvins_node(
+    ros_domain_id: int,
+    config_path: str,
+    imu_topic: str = "/openvins/imu",
+    cam0_topic: str = "/openvins/cam0/image_raw",
+    cam1_topic: str = "/openvins/cam1/image_raw",
+    namespace: str = "/ov_msckf",
+    use_stereo: bool = True,
+    max_cameras: int = 2,
+) -> subprocess.Popen:
+    """Compatibility wrapper: VIO launch logic lives in state_estimation.runtime."""
+    try:
+        from obstacle_avoidance.state_estimation import OpenVinsConfig, start_openvins_node as _start
+    except Exception:
+        from state_estimation import OpenVinsConfig, start_openvins_node as _start
+
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    cfg = replace(
+        OpenVinsConfig.from_env(project_root=project_root),
+        config_path=config_path,
+        imu_topic=imu_topic,
+        cam0_topic=cam0_topic,
+        cam1_topic=cam1_topic,
+        namespace=namespace,
+        use_stereo=bool(use_stereo),
+        max_cameras=int(max_cameras),
+    ).validated()
+    return _start(config=cfg, ros_domain_id=ros_domain_id)

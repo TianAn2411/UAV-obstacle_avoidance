@@ -33,7 +33,7 @@ sudo apt install gz-harmonic
 ```
 
 ### 4. MicroXRCE-DDS Agent
-
+jazzy
 ```bash
 git clone https://github.com/eProsima/Micro-XRCE-DDS-Agent.git
 cd Micro-XRCE-DDS-Agent && mkdir build && cd build
@@ -157,8 +157,19 @@ obstacle_avoidance/
     process_utils.py        # Gazebo/PX4/MicroXRCE process launchers
     px4_manager.py          # Per-rank PX4 SITL instance manager
     gz_transport_client.py  # Native Gazebo Transport client
+  state_estimation/         # VIO/OpenVINS config, frame math, runtime launch, PX4 EV bridge
   symbolic_extractor/       # Symbolic feature extraction pipeline (submodule)
 ```
+
+### state_estimation / VIO
+
+`state_estimation/` is the GPS-denied VIO module. The current backend is
+OpenVINS MSCKF. It republishes PX4 IMU data as ROS `Imu`, launches the
+OpenVINS ROS2 subscriber node, converts OpenVINS ENU/FLU odometry into PX4
+NED/FRD `VehicleOdometry`, and feeds PX4 EKF2 through
+`/fmu/in/vehicle_visual_odometry`. This keeps HALO aligned with the proposal:
+sensor points are integrated using VIO/state-filtered pose, while Gazebo ground
+truth remains only an opt-in reset/debug fallback.
 
 ### symbolic_extractor
 

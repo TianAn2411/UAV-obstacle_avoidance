@@ -18,6 +18,7 @@ ckpts/
 log/
 build/
 install/
+external/
 *.sdf.bak
 
 # OS generated files

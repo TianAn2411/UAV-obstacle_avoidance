@@ -179,9 +179,21 @@ def main():
     args = parser.parse_args()
 
     base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    default_name = f"ppo_drone_stage{args.stage}_interrupted"
-    model_in  = args.model_in  or os.path.join(base, f"{default_name}.zip")
-    model_out = args.model_out or os.path.join(base, f"{default_name}.zip")
+
+    # Mirrors train.py's raw/symbolic namespace split -- must match or this
+    # silently reads/writes the wrong mode's checkpoint.
+    is_symbolic = False
+    try:
+        import yaml
+        with open(os.path.join(base, "configs", "ppo_config.yaml")) as f:
+            is_symbolic = str((yaml.safe_load(f) or {}).get("policy_mode", "raw")) == "symbolic"
+    except Exception:
+        pass
+    model_prefix = f"ppo_drone_stage{args.stage}" if not is_symbolic else f"ppo_drone_symbolic_stage{args.stage}"
+    mode_subdir = "symbolics" if is_symbolic else "raws"
+    default_path = os.path.join(base, "interrupt", mode_subdir, f"{model_prefix}_interrupted.zip")
+    model_in  = args.model_in  or default_path
+    model_out = args.model_out or default_path
 
     if not os.path.exists(model_in):
         sys.exit(f"Model not found: {model_in}")

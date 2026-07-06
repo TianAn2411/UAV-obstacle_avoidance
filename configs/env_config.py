@@ -10,6 +10,22 @@ class EnvConfig:
     bev_max_range_m: float = 10.0  # physical range for Ch0 de-normalization; must match ExtractorConfig.max_depth_range
     state_dim: int = 31   # 3 vel + 3 ang_vel + 1 alt + 3 goal + 4 orientation + 4 last_action + 4 delta_A1 + 4 delta_A2 + 4 fence_flu + 1 dfa_progress
     action_dim: int = 4                    # [vx, vy, vz, yaw_rate]
+    # Track A vs Track B (SAGE) — "raw": ActorCriticPolicy outputs [vx,vy,vz,yaw_rate]
+    # directly in [-1,1] via ActionManager. "symbolic": SymbolicActorCriticPolicy outputs
+    # symbolic_num_gates Beta-distributed gates in [0,1], blended by SAGEPipeline's
+    # primitives (goal/vertical/dodge/face) + CBFShield instead of ActionManager.
+    # Default "raw" — Track A code path is byte-identical when this stays unset.
+    policy_mode: str = "raw"               # "raw" | "symbolic"
+    symbolic_num_gates: int = 4            # goal, vertical, dodge, face (positional order) — must match SAGEPipeline's primitives list, 1:1 (no extra +1, p_boost removed)
+    sage_face_gate_min: float = 0.2        # p_face floor — see PrimitivesConfig.face_gate_min
+    cbf_enabled: bool = False              # symbolic mode only — gates CBFShield's real QP vs identity passthrough
+    # Symbolic-only reset curriculum: randomize post-reset altitude (scripted vz
+    # climb/descend, not teleport) so VerticalPrimitive's descend branch (z >
+    # alt_optimal_high) gets exercised too -- the shared _pre_episode_climb_if_low
+    # always lands at a fixed low altitude (1.5m) for both tracks, so without this
+    # symbolic mode never trained the "fly back down" case. No effect on Track A.
+    sage_random_start_alt_min: float = 2.0
+    sage_random_start_alt_max: float = 6.5  # margin below alt_max=7.0 -- scripted climb can overshoot target by ~0.15m
     # Sim-to-real observation noise: x_noisy = x + N(0, σ²), applied in
     # train_manager.py:_build_state_vector — only the policy observation is noised,
     # GT position is still used for rewards/collision/fence. 0.0 = disabled.
@@ -86,8 +102,8 @@ class EnvConfig:
     yaw_rate_limit: float = 0.6
     action_smoothing: float = 0.35
     freeze_vz: bool = False  # Stage 0: soft-band vz constraint
-    freeze_vz_band_low: float = 2.0   # if z < this AND vz_cmd < 0 → override climb
-    freeze_vz_band_high: float = 3.5  # if z > this → P-controller descend to band_high
+    freeze_vz_band_low: float = 2.5  # if z < this AND vz_cmd < 0 → override climb
+    freeze_vz_band_high: float = 6.5  # if z > this → P-controller descend to band_high
     freeze_vz_hold_alt: float = 3.2   # legacy, unused by soft band
 
     # Symbolic Extractor (BEV pipeline)
@@ -140,6 +156,15 @@ class EnvConfig:
     pre_episode_auto_yaw_tol_deg: float = 8.0
     pre_episode_auto_yaw_gain: float = 1.2
     yaw_curriculum_steps: int = 0   # steps over which yaw assist fades 0→π; 0=binary on/off
+    # Manual carryover for the _YAW_SCHEDULE assist-ratio lookup (train_manager.py
+    # reset()) so the ramp-down doesn't reset to 100% assist at a stage boundary.
+    # _stage_start_step is per-stage (stage{N}_start_step.json), so
+    # _steps_in_stage alone would jump back to 0 the instant a later stage also
+    # enables pre_episode_auto_yaw_enabled. Set this in a later stage's yaml
+    # block to the earlier stage's actual run length (e.g. stage1's block sets
+    # this to stage0's min_steps) to continue the same ramp instead of
+    # restarting it. 0 = no carryover (default, single-stage schedule).
+    yaw_curriculum_carryover_steps: int = 0
 
     # Reset — multi-env fast reset (from old drone_env.py L616-636)
     multi_env_fast_reset_enabled: bool = False

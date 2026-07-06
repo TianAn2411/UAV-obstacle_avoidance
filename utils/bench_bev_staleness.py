@@ -21,6 +21,7 @@ Usage (from obstacle_avoidance/, venv active):
 
 import argparse
 import os
+import sys
 import threading
 import time
 
@@ -41,13 +42,36 @@ def main() -> None:
     parser.add_argument("--rank", type=int, default=0)
     parser.add_argument("--steps", type=int, default=500)
     parser.add_argument("--poll-hz", type=float, default=200.0, help="BEV identity poll rate")
+    parser.add_argument("--switch-interval", type=float, default=None,
+                         help="sys.setswitchinterval() override (default Python 5ms). "
+                              "Experiment: does internal GIL contention among ROSBridge's "
+                              "~6 threads (spin/VO/keepalive/bev_proc/EDT-executor/main) "
+                              "explain the staleness spikes, independent of CPU pinning/"
+                              "governor/GC (all already ruled out this session)?")
     args = parser.parse_args()
+
+    if args.switch_interval is not None:
+        sys.setswitchinterval(args.switch_interval)
+        print(f"[BENCH] sys.setswitchinterval({args.switch_interval}) — "
+              f"default is 0.005 (5ms)")
 
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     config_path = os.path.join(project_root, "configs", "ppo_config.yaml")
     with open(config_path) as f:
         ppo_cfg = yaml.safe_load(f)
     conf = next(c for c in ppo_cfg["curriculum"] if c["stage"] == args.stage)
+
+    # Load machine_config.yaml the same way run_training() does -- without this,
+    # make_env() silently skips CPU pinning (pin_processes gate checks `if machine_cfg`,
+    # defaults to None here) even when pin_processes: True in the yaml. This bench was
+    # missing that wiring, so all pin_processes A/B comparisons run through it so far
+    # never actually applied pinning.
+    machine_config_path = os.path.join(project_root, "configs", "machine_config.yaml")
+    machine_cfg: dict = {}
+    if os.path.exists(machine_config_path):
+        with open(machine_config_path) as _mcf:
+            machine_cfg = yaml.safe_load(_mcf) or {}
+    print(f"[BENCH] machine_cfg = {machine_cfg}")
 
     ckpt_dir = os.path.join(project_root, "ckpts", f"stage{args.stage}")
     ckpt_path = find_latest_checkpoint(ckpt_dir, f"stage{args.stage}")
@@ -65,6 +89,7 @@ def main() -> None:
             run_id="bev_staleness_bench",
             total_envs=1,
             stage_conf=conf,
+            machine_cfg=machine_cfg,
         )()
 
         obs, _ = env.reset()

@@ -29,8 +29,8 @@ sys.path.insert(0, _repo_root)
 from stable_baselines3 import PPO
 from stable_baselines3.common.save_util import load_from_zip_file, data_to_json
 
-MODEL_ZIP_IN = "ppo_drone_stage0_interrupted"
-PKL_IN       = "ppo_drone_stage0_vecnormalize_interrupted"
+MODEL_ZIP_IN = "interrupt/raws/ppo_drone_stage0_interrupted"
+PKL_IN       = "interrupt/raws/ppo_drone_stage0_vecnormalize_interrupted"
 MODEL_OUT    = "ppo_drone_stage0_expanded_31"
 TMP_ZIP      = "_tmp_surgery_31.zip"
 WARM_LR      = 3e-5   # 10× nhỏ hơn 3e-4 — warm-up cho 8 cột zero hội tụ
@@ -145,6 +145,6 @@ print(f"  obs_space['state'] patched: (23,) → (31,)")
 print(f"  ret_rms preserved — mean={vn.ret_rms.mean:.4f}  var={vn.ret_rms.var:.4f}  count={vn.ret_rms.count:.0f}")
 print()
 print("Done. Tiếp theo:")
-print(f"  cp {MODEL_OUT}.zip ppo_drone_stage0_interrupted.zip")
-print(f"  cp {MODEL_OUT}.pkl ppo_drone_stage0_vecnormalize_interrupted.pkl")
+print(f"  cp {MODEL_OUT}.zip interrupt/raws/ppo_drone_stage0_interrupted.zip")
+print(f"  cp {MODEL_OUT}.pkl interrupt/raws/ppo_drone_stage0_vecnormalize_interrupted.pkl")
 print("  ./run_train.sh --1")

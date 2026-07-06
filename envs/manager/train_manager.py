@@ -17,6 +17,36 @@ from obstacle_avoidance.envs.manager.reset_manager import ResetManager, ResetDec
 from obstacle_avoidance.envs.manager.reward_manager import RewardManager, StepState, RewardComponents
 from obstacle_avoidance.utils.bridge_factory import ROSBridge, Spawner
 from obstacle_avoidance.utils.logger import setup_logger
+from obstacle_avoidance.research.primitive_stats.recorder import PrimitiveStatsRecorder
+
+# Track B (SAGE) — only touched when ecfg.policy_mode == "symbolic" (Step 9 wiring).
+# Integration layer: translates this repo's EnvConfig/RewardConfig into the
+# package's own standalone config types, per symbolic_action's own
+# standalone-library rule (plan/IMPLEMENTATION_PLAN.md Steps 1/7/8).
+from obstacle_avoidance.symbolic_action.config import SAGEConfig
+from obstacle_avoidance.symbolic_action.pipeline import SAGEPipeline
+from obstacle_avoidance.symbolic_action.primitives.config import PrimitivesConfig
+from obstacle_avoidance.symbolic_action.primitives.dodge import DodgePrimitive
+from obstacle_avoidance.symbolic_action.primitives.face import FacePrimitive
+from obstacle_avoidance.symbolic_action.primitives.goal import GoalPrimitive
+from obstacle_avoidance.symbolic_action.primitives.vertical import VerticalPrimitive
+from obstacle_avoidance.symbolic_action.safety_filter.cbf_shield import CBFShield
+from obstacle_avoidance.symbolic_action.safety_filter.config import CBFConfig
+
+
+class _NoMapBuilder:
+    """query_barrier stub used when use_symbolic_extractor=False or the
+    extractor pipeline hasn't produced a frame yet — matches CBFShield's own
+    fail-open contract (h=None -> passthrough), never raises."""
+    def query_barrier(self, world_xy, safety_margin: float = 0.0):
+        return None, None
+
+
+class _IdentityCBFShield:
+    """Used when cbf_enabled=False — primitives still see EDT gradients via
+    edt_query_fn, but the safety-shield QP correction itself is skipped."""
+    def filter(self, pos_xy, u_intent_xy):
+        return np.asarray(u_intent_xy, dtype=np.float32)
 
 
 @dataclass
@@ -46,10 +76,15 @@ class TrainManager:
     ) -> None:
         self.bridge = bridge
         self.ecfg = ecfg
+        self.rcfg = rcfg
         self.env_id = env_id
         self.logger = setup_logger(f"TRAIN_{env_id}")
 
         self._action_manager = ActionManager(ecfg)
+        self._sage_pipeline: Optional[SAGEPipeline] = (
+            self._build_sage_pipeline(ecfg, rcfg) if ecfg.policy_mode == "symbolic" else None
+        )
+        self._last_cbf_correction_norm: float = 0.0  # feeds StepState -> reward's cbf_intervention
         self._pillar_manager = PillarManager(spawner, pcfg, ecfg, rcfg, env_id)
         self._reset_manager = ResetManager(bridge, ecfg, env_id)
         self._reward_manager = RewardManager(rcfg, ecfg)
@@ -61,6 +96,11 @@ class TrainManager:
         self._stage_start_step: int = int(start_step)
         self._goal_xy_radius: float = float(ecfg.goal_xy_radius_schedule_values[0])
         self._last_goal_xy_radius_logged: Optional[float] = None
+        self._yaw_good_thresh: float = float(
+            rcfg.stage1_yaw_good_thresh_schedule_values[0]
+            if rcfg.stage1_yaw_good_thresh_schedule_values
+            else rcfg.stage1_yaw_good_thresh
+        )
 
         # Start / goal
         start_arr = np.asarray(ecfg.start, dtype=np.float32)
@@ -89,6 +129,14 @@ class TrainManager:
         # All sim-to-real noise: obs noise, action delay/noise, mass scale, wind
         self._noise_manager = NoiseManager(ecfg, self._np_random)
 
+        # research/PLAN.md §B — off unless RECORD_PRIMITIVE_STATS=1
+        self._stats_recorder = PrimitiveStatsRecorder(
+            env_id=env_id,
+            total_envs=max(1, ecfg.total_envs),
+            alt_optimal_low=rcfg.alt_optimal_low,
+            alt_optimal_high=rcfg.alt_optimal_high,
+        )
+
         # DFA state (P-NSRL)
         self._dfa_q: int = 0            # current DFA state index
         self._dfa_N: int = 1            # total subgoal checkpoints this episode
@@ -99,10 +147,62 @@ class TrainManager:
 
     def close(self) -> None:
         """Clean up bridge and flush logs. Source: old drone_env.py L8134."""
+        self._stats_recorder.close()
         try:
             self.bridge.close()
         except Exception as e:
             self.logger.debug(f"[TRAIN] bridge close error: {e}")
+
+    def _build_sage_pipeline(self, ecfg: EnvConfig, rcfg: RewardConfig) -> SAGEPipeline:
+        """Track B (SAGE) construction — gate order [goal, vertical, dodge, face]
+        must match ecfg.symbolic_num_gates and the raw_action layout the
+        Beta-distribution policy head was trained against (positional/zip
+        order, not identity-based — symbolic_action/pipeline.py). All 4 gates
+        are consumed by a primitive instance now (no separate p_boost gate —
+        FacePrimitive took over its slot when Goal was split into Goal+Face,
+        see goal.py's module docstring)."""
+        prims_cfg = PrimitivesConfig(
+            alt_optimal_low=rcfg.alt_optimal_low,
+            alt_optimal_high=rcfg.alt_optimal_high,
+            alt_suboptimal_low_thresh=rcfg.alt_suboptimal_low_thresh,
+            alt_suboptimal_high_thresh=rcfg.alt_suboptimal_high_thresh,
+            face_gate_min=ecfg.sage_face_gate_min,
+        )
+        primitives = [
+            GoalPrimitive(),
+            VerticalPrimitive(prims_cfg),
+            DodgePrimitive(prims_cfg),
+            FacePrimitive(prims_cfg),
+        ]
+
+        if ecfg.cbf_enabled:
+            bev = getattr(self.bridge._pipeline, "bev_mapper", None)
+            map_builder = bev.map_builder if bev is not None else _NoMapBuilder()
+            cbf_shield = CBFShield(
+                CBFConfig(cbf_enabled=True, vx_limit=ecfg.vx_limit, vy_limit=ecfg.vy_limit),
+                map_builder=map_builder,
+            )
+        else:
+            cbf_shield = _IdentityCBFShield()
+
+        sage_cfg = SAGEConfig(
+            vx_limit=ecfg.vx_limit,
+            vy_limit=ecfg.vy_limit,
+            vz_up_limit=ecfg.vz_up_limit,
+            vz_down_limit=ecfg.vz_down_limit,
+            yaw_rate_limit=ecfg.yaw_rate_limit,
+        )
+        return SAGEPipeline(cfg=sage_cfg, cbf_shield=cbf_shield, primitives=primitives)
+
+    def _edt_query_fn(self, pos_xy: np.ndarray):
+        """DodgePrimitive's gradient source — returns None (zero dodge
+        contribution, Primitive's own contract) when no extractor frame
+        exists yet, never raises."""
+        bev = getattr(self.bridge._pipeline, "bev_mapper", None)
+        if bev is None:
+            return None
+        _, grad_h = bev.map_builder.query_barrier(pos_xy)
+        return grad_h
 
     # ------------------------------------------------------------------ #
     # Public entry points (called by drone_env.py)                       #
@@ -112,6 +212,7 @@ class TrainManager:
         """Orchestrate reset: classify → dispatch → finalize. Source: old drone_env.py L4314."""
         reset_t0 = time.monotonic()
         self._update_goal_xy_radius()
+        self._update_yaw_good_thresh()
 
         reason = self._last_done_reason or "startup"
 
@@ -130,7 +231,13 @@ class TrainManager:
         # (threshold_steps, min_assist): at each milestone min_assist drops.
         _assist_ratio = 1.0
         if self.ecfg.pre_episode_auto_yaw_enabled:
-            _steps_in_stage = max(0, self._global_step - self._stage_start_step)
+            # + yaw_curriculum_carryover_steps: continues the ramp across a
+            # stage boundary instead of resetting to 100% assist -- see
+            # EnvConfig.yaw_curriculum_carryover_steps docstring.
+            _steps_in_stage = (
+                max(0, self._global_step - self._stage_start_step)
+                + self.ecfg.yaw_curriculum_carryover_steps
+            )
             _YAW_SCHEDULE = [
                 (     0, 1.0),  # 0–50k:   Uniform(1.0, 1.0) — full assist
                 ( 50_000, 0.7),  # 50–80k:  Uniform(0.7, 1.0)
@@ -218,10 +325,18 @@ class TrainManager:
         ):
             self._pre_episode_climb_if_low(_pos_pre)
 
+        # Symbolic-only: randomize post-reset altitude via scripted vz (climb
+        # or descend), so VerticalPrimitive's descend branch gets trained too
+        # -- see _sage_random_start_altitude()'s docstring.
+        if self.ecfg.policy_mode == "symbolic" and getattr(self.bridge, "is_armed", False):
+            self._sage_random_start_altitude()
+
         # Common finalize
         self._action_manager.reset(
             hold_alt=self.ecfg.freeze_vz_hold_alt if self.ecfg.freeze_vz else None
         )
+        if self._sage_pipeline is not None:
+            self._sage_pipeline.reset()
 
         # DFA reset — Option B: dfa_q = corridor_avoided_count, dfa_N = active corridor pillars.
         # Fallback to stage1 linear waypoints when no active corridor pillars exist.
@@ -306,6 +421,7 @@ class TrainManager:
         8. Return StepResult
         """
         self._update_goal_xy_radius()
+        self._update_yaw_good_thresh()
 
         # Early exit: failsafe active before action is sent
         if self.bridge.failsafe and self._step_count > 5:
@@ -341,12 +457,49 @@ class TrainManager:
         alt = float(pos_now[2]) if np.all(np.isfinite(pos_now)) else 0.0
         is_takeoff = not self._has_been_airborne
 
-        action_out: ActionOutput = self._action_manager.process(
-            raw_action=raw_action,
-            step_count=self._step_count,
-            altitude=alt,
-            is_takeoff_phase=is_takeoff,
-        )
+        if self._sage_pipeline is not None:
+            yaw_now, _ = self.bridge.get_yaw()
+            # SAGEPipeline is a live real-time controller (primitives + CBFShield) that
+            # runs identically at real deployment, where there is no Gazebo ground
+            # truth -- only an EKF/VIO estimate. Unlike pos_now/alt above (used by
+            # reward/PillarManager/Track A's ActionManager, which are training-only
+            # scaffolding that never executes at inference), this is a position feed
+            # that must already be the estimator's output today, not the simulator's
+            # privileged state -- swapping it later at deploy time would silently
+            # change SAGE's/CBF's behavior versus what was validated in training.
+            # This also fixes a frame-consistency gap: the EDT/BEV map (query_barrier,
+            # via _edt_query_fn below) is itself built from EKF-derived world
+            # positions (symbolic_extractor's odom-based integration), so querying it
+            # with a Gazebo-ground-truth pos_xy was already a subtle mismatch even in
+            # sim whenever the (tiny, sim-only) EKF/GT gap was nonzero.
+            ekf_pos_now = self.bridge.get_ekf_position_enu()
+            ekf_alt = float(ekf_pos_now[2]) if np.all(np.isfinite(ekf_pos_now)) else alt
+            sage_out = self._sage_pipeline.process(
+                raw_action=raw_action,
+                pos_xy=ekf_pos_now[:2],
+                pos_z=ekf_alt,
+                yaw=yaw_now,
+                goal_xy=self._goal[:2],
+                edt_query_fn=self._edt_query_fn,
+            )
+            action_out = ActionOutput(
+                vx=sage_out.vx, vy=sage_out.vy, vz=sage_out.vz, yaw_rate=sage_out.yaw_rate,
+            )
+            # Diagnostics -> reward's cbf_intervention penalty (RewardManager,
+            # gated on ecfg.policy_mode=="symbolic" there) -- 0.0 whenever CBF
+            # didn't correct (identity shield, passthrough, or no EDT frame
+            # yet), never leaks into Track A.
+            self._last_cbf_correction_norm = float(
+                getattr(self._sage_pipeline._cbf_shield, "last_correction_norm", 0.0)
+            )
+        else:
+            action_out: ActionOutput = self._action_manager.process(
+                raw_action=raw_action,
+                step_count=self._step_count,
+                altitude=alt,
+                is_takeoff_phase=is_takeoff,
+            )
+            self._last_cbf_correction_norm = 0.0  # Track A never has a CBF shield
 
         # 2. Domain randomisation pipeline → send velocity and tick
         computed_cmd = np.array(
@@ -354,6 +507,14 @@ class TrainManager:
         )
         # mass scale + delay buffer + ESC noise; delayed_cmd goes into state[14:18]
         delayed_cmd, sent_cmd = self._noise_manager.step_action(computed_cmd)
+
+        # StepState.action/prev_action must always be the 4-dim actuator command —
+        # raw_action is only 3-dim (gates) in symbolic mode, which crashes
+        # RewardManager._reward_smooth's shape-fixed norm(action - prev_action).
+        # Real bug caught by Step 10a's SITL run, not by Step 9's unit-level test.
+        _action_for_reward = (
+            computed_cmd if self._sage_pipeline is not None else np.asarray(raw_action, dtype=np.float32)
+        )
 
         self.bridge.send_velocity(sent_cmd[0], sent_cmd[1], sent_cmd[2], sent_cmd[3])
         self.bridge.tick(self.ecfg.dt)
@@ -391,6 +552,17 @@ class TrainManager:
             goal_xy_radius=self._goal_xy_radius,
             step_count=self._step_count,
         )
+
+        if self._stats_recorder.enabled:
+            self._stats_recorder.record(
+                step=self._global_step,
+                pos=pos,
+                yaw=float(yaw),
+                goal=self._goal,
+                pillar_xy=pillar_snap.nearest_xy,
+                pillar_dist=pillar_snap.nearest_dist,
+                edt_ch0=perception[0] if perception.shape[0] >= 3 else None,
+            )
 
         # 4b. DFA advance — Option B: corridor_avoided_count for pillar stages
         self._dfa_q_prev = self._dfa_q
@@ -442,7 +614,7 @@ class TrainManager:
             yaw=float(yaw),
             prev_pos=self._prev_pos,
             prev_action=self._prev_action,
-            action=np.asarray(raw_action, dtype=np.float32),
+            action=_action_for_reward,
             step_count=self._step_count,
             global_step=self._global_step,
             stage_index=(0 if self.ecfg.freeze_vz else (1 if self._pillar_manager._actual_num_pillars == 0 else 2)),
@@ -457,6 +629,7 @@ class TrainManager:
             reset_info=self._reset_manager.get_reset_helpers(),
             done_reason=done_reason,
             goal_xy_radius=self._goal_xy_radius,
+            yaw_good_thresh=self._yaw_good_thresh,
             is_terminal=terminated,
             is_truncated=truncated,
             goal=self._goal,
@@ -467,6 +640,7 @@ class TrainManager:
             yaw_error=yaw_error,
             dfa_q=self._dfa_q,
             dfa_N=self._dfa_N,
+            cbf_correction_norm=self._last_cbf_correction_norm,
             dfa_q_prev=self._dfa_q_prev,
             stage1_waypoint_advance=_stage1_advance,
         )
@@ -498,7 +672,7 @@ class TrainManager:
         # Update carry state
         self._prev_pos = pos.copy()
         self._prev_dist_xy = dist_xy
-        self._prev_action = np.asarray(raw_action, dtype=np.float32)
+        self._prev_action = _action_for_reward
         # State vector [14:18] = cmd actually sent to PX4 this step (delayed, pre-noise).
         # With delay=N: delayed_cmd = computed_cmd_{t-N} — what drone executed this step.
         # ESC noise is unobservable on real hardware → store pre-noise, not sent_cmd.
@@ -611,17 +785,55 @@ class TrainManager:
         return max(candidates, key=lambda c: float(np.linalg.norm(c[:2] - base_pos[:2])))
 
     def _update_goal_xy_radius(self) -> None:
-        """Lookup schedule in ecfg and update goal_xy_radius. Source: old drone_env.py L7281."""
+        """Piecewise-linear interpolation over the schedule (smooth ramp between
+        anchor points, not a staircase jump). Same (steps, values) config format
+        as before — was a step-lookup, smoothed this session to match the
+        goal_dist annulus ramp's style (_generate_new_goal's ramp_ratio).
+        Source: old drone_env.py L7281."""
         e = self.ecfg
+        steps = e.goal_xy_radius_schedule_steps
+        values = e.goal_xy_radius_schedule_values
         step = max(0, int(self._global_step) - int(self._stage_start_step))
-        idx = 0
-        for i, start_step in enumerate(e.goal_xy_radius_schedule_steps):
-            if step >= int(start_step):
-                idx = i
-            else:
-                break
-        target_radius = float(e.goal_xy_radius_schedule_values[idx])
-        self._goal_xy_radius = target_radius
+
+        if step <= steps[0]:
+            self._goal_xy_radius = float(values[0])
+            return
+        if step >= steps[-1]:
+            self._goal_xy_radius = float(values[-1])
+            return
+
+        for i in range(len(steps) - 1):
+            if steps[i] <= step < steps[i + 1]:
+                t = (step - steps[i]) / float(steps[i + 1] - steps[i])
+                self._goal_xy_radius = float(values[i] + (values[i + 1] - values[i]) * t)
+                return
+
+    def _update_yaw_good_thresh(self) -> None:
+        """Same piecewise-linear ramp as _update_goal_xy_radius, for
+        RewardConfig.stage1_yaw_good_thresh_schedule_* — loosens the
+        forward-goal bonus/penalty threshold early in training, tightens it
+        as the policy should already be hitting the looser bar reliably.
+        Empty schedule list = ramp disabled, flat stage1_yaw_good_thresh used."""
+        r = self.rcfg
+        steps = r.stage1_yaw_good_thresh_schedule_steps
+        values = r.stage1_yaw_good_thresh_schedule_values
+        if not steps or not values:
+            self._yaw_good_thresh = float(r.stage1_yaw_good_thresh)
+            return
+        step = max(0, int(self._global_step) - int(self._stage_start_step))
+
+        if step <= steps[0]:
+            self._yaw_good_thresh = float(values[0])
+            return
+        if step >= steps[-1]:
+            self._yaw_good_thresh = float(values[-1])
+            return
+
+        for i in range(len(steps) - 1):
+            if steps[i] <= step < steps[i + 1]:
+                t = (step - steps[i]) / float(steps[i + 1] - steps[i])
+                self._yaw_good_thresh = float(values[i] + (values[i + 1] - values[i]) * t)
+                return
 
     def _pre_episode_climb_if_low(self, pos_now: np.ndarray) -> None:
         """Climb to safe altitude if armed and below 1m at episode start. Timeout 6s.
@@ -642,6 +854,41 @@ class TrainManager:
             self.bridge.tick(self.ecfg.dt)
         self.bridge.send_velocity(0.0, 0.0, 0.0, 0.0)
         self.bridge.tick(self.ecfg.dt)
+
+    def _sage_random_start_altitude(self) -> None:
+        """Symbolic-only reset curriculum (§ user request): after the generic
+        _pre_episode_climb_if_low above (which always lands at a fixed 1.5m
+        for both tracks), fly via scripted vz -- NOT teleport, so the drone
+        actually experiences a climb or descend transient like it would
+        mid-episode -- to a randomized target altitude spanning below,
+        inside, and above the optimal band [alt_optimal_low, alt_optimal_high].
+        Without this, VerticalPrimitive's descend branch (z > alt_optimal_high)
+        is never exercised in training since every episode only ever climbs
+        up from below. Uses takeoff_assist_vz/reset_descend_vz (scripted-reset
+        speeds, faster than the RL-commandable vz_up/down_limit) since this
+        runs before the episode/policy starts, same convention as the
+        existing pre-episode climb and descend-before-disarm helpers.
+        """
+        target_z = float(self._np_random.uniform(
+            self.ecfg.sage_random_start_alt_min, self.ecfg.sage_random_start_alt_max
+        ))
+        timeout = 6.0
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < timeout:
+            pos = self.bridge.get_gazebo_position()
+            if not np.all(np.isfinite(pos)):
+                break
+            z = float(pos[2])
+            if abs(z - target_z) < 0.15:
+                break
+            vz = self.ecfg.takeoff_assist_vz if z < target_z else self.ecfg.reset_descend_vz
+            self.bridge.send_velocity(0.0, 0.0, vz, 0.0)
+            self.bridge.tick(self.ecfg.dt)
+        self.bridge.send_velocity(0.0, 0.0, 0.0, 0.0)
+        self.bridge.tick(self.ecfg.dt)
+        self.logger.debug(
+            f"[RESET] sage_random_start_altitude env={self.env_id} target_z={target_z:.2f}m"
+        )
 
     # ------------------------------------------------------------------ #
     # Observation / depth processing                                      #

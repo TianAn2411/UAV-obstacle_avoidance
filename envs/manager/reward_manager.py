@@ -27,14 +27,16 @@ class RewardComponents:
     start_zone: float = 0.0
     # Pillar-specific
     pillar_too_close: float = 0.0
-    pillar_clearance_soft: float = 0.0
-    collision_course: float = 0.0
+    pillar_too_wide: float = 0.0
+    pillar_tight_pass: float = 0.0
     bypass_reward: float = 0.0
     stage1_waypoint_bonus: float = 0.0
     # Pillar behavior
     post_pillar: float = 0.0
     # Terminal
     terminal: float = 0.0
+    # Symbolic-mode only (Track B) — see cbf_intervention_coef's docstring
+    cbf_intervention: float = 0.0
     # Meta
     total: float = 0.0
 
@@ -62,6 +64,7 @@ class StepState:
     reset_info: dict                       # from ResetManager
     done_reason: str                       # empty if not terminal
     goal_xy_radius: float
+    yaw_good_thresh: float                 # ramped stage1_yaw_good_thresh, see train_manager.py's _update_yaw_good_thresh()
     is_terminal: bool
     is_truncated: bool
     goal: np.ndarray                       # current episode goal [x, y, z]
@@ -75,6 +78,9 @@ class StepState:
     dfa_N: int = 1                         # total subgoal checkpoints this episode
     dfa_q_prev: int = 0                    # DFA state at previous step (detect transition)
     stage1_waypoint_advance: int = 0       # waypoints newly crossed this step (pillar stages only)
+    # Track B (symbolic_action) only — CBFShield.last_correction_norm, 0.0
+    # whenever no CBF shield exists (Track A) or it didn't correct this step.
+    cbf_correction_norm: float = 0.0
 
 
 class RewardManager:
@@ -140,8 +146,22 @@ class RewardManager:
 
         # --- Action quality ---
         c.smooth = self._reward_smooth(state.action, state.prev_action)
-        _yaw_align_w = abs(math.cos(float(state.yaw_error)))
-        c.yaw_rate_penalty = float(self._r.yaw_rate_penalty_coef) * abs(state.final_yaw_rate) * _yaw_align_w
+        # Penalize yaw_rate only when it's turning the WRONG way (away from
+        # reducing yaw_error) or spinning while already aligned -- never while
+        # actively correcting toward the goal, however large the misalignment.
+        # Old weight (abs(cos(yaw_error))) penalized correction hardest right
+        # at yaw_error=+-180deg (goal behind, cos=-1, weight=1) -- fighting
+        # FacePrimitive's own p_face gate at exactly the state that most needs
+        # a fast, large yaw_rate correction (sign(yaw_rate)==sign(yaw_error)
+        # is the "same rotational direction as the error" test, since both
+        # are wrap_pi(desired_yaw - current_yaw)-style signed quantities).
+        _he = float(state.yaw_error)
+        _yr = float(state.final_yaw_rate)
+        if abs(_he) < 1e-3:
+            _yaw_align_w = 1.0 if abs(_yr) > 1e-3 else 0.0  # aligned but still spinning -> penalize
+        else:
+            _yaw_align_w = 0.0 if (_yr * _he) > 0.0 else 1.0  # correcting toward goal -> free
+        c.yaw_rate_penalty = float(self._r.yaw_rate_penalty_coef) * abs(_yr) * _yaw_align_w
 
         # --- Yaw alignment (no progress amplification — progress replaced by PBRS) ---
         c.yaw_align = self._reward_yaw_align(state)
@@ -156,34 +176,20 @@ class RewardManager:
         if state.vel[2] < -self._r.fall_vz_thresh:
             c.fall_penalty = self._r.fall_penalty_coef * (-float(state.vel[2]) - self._r.fall_vz_thresh)
 
-        # --- Pillar clearance / collision course ---
+        # --- Pillar clearance (unified: too-close + too-wide + tight-pass bonus) ---
         if obstacle_enabled:
             (
                 c.pillar_too_close,
-                c.pillar_clearance_soft,
+                c.pillar_too_wide,
             ) = self._reward_pillar_clearance(state)
+            c.pillar_tight_pass = float(state.pillar_collision_snap.get("pillar_tight_pass_bonus", 0.0))
             # Danger scale: only yaw_align (progress/velocity_goal already removed)
             clearance_body = state.pillar_collision_snap.get("clearance_body", float("inf"))
-            if np.isfinite(clearance_body) and clearance_body < self._r.clearance_body_safe:
-                danger_scale = max(0.0, min(1.0, clearance_body / self._r.clearance_body_safe))
+            if np.isfinite(clearance_body) and clearance_body < self._r.pillar_clearance_close_thresh:
+                danger_scale = max(0.0, min(1.0, clearance_body / self._r.pillar_clearance_close_thresh))
                 c.yaw_align *= max(0.30, danger_scale)
             c.bypass_reward = float(state.bypass_subgoal_info.get("reward", 0.0))
             c.stage1_waypoint_bonus = int(state.stage1_waypoint_advance) * float(self._r.stage1_sg_bonus_pillar_stage)
-            # Approach velocity penalty: penalize speed component directed INTO nearest pillar.
-            # approach_speed = dot(vel_xy, dir_to_pillar) — zero when dodging laterally.
-            # proximity_weight = linear 0→1 as clearance drops 2m→0.
-            # Does NOT penalize lateral flight or high speed away from pillar.
-            if state.nearest_pillar_xy is not None:
-                _cb = float(state.pillar_collision_snap.get("clearance_body", float("inf")))
-                if np.isfinite(_cb) and _cb < self._r.pillar_safe_clearance:
-                    _dtp = np.asarray(state.nearest_pillar_xy[:2], dtype=np.float32) - np.asarray(state.pos[:2], dtype=np.float32)
-                    _dist2d = float(np.linalg.norm(_dtp))
-                    if _dist2d > 1e-6:
-                        _dtp = _dtp / _dist2d
-                        _approach = float(np.dot(np.asarray(state.vel[:2], dtype=np.float32), _dtp))
-                        if _approach > 0.0:
-                            _pw = max(0.0, 1.0 - _cb / self._r.pillar_safe_clearance)
-                            c.collision_course = self._r.collision_course_coef * _approach * _pw
 
         # --- Pillar behavior ---
         if obstacle_enabled:
@@ -192,6 +198,26 @@ class RewardManager:
 
         # --- Terminal ---
         c.terminal = self._reward_terminal(state)
+
+        # --- CBF intervention penalty (Track B / symbolic_action only) ---
+        # Gated on policy_mode explicitly (not just relying on
+        # cbf_correction_norm defaulting to 0.0 for Track A) so this term can
+        # never leak into raw-mode reward even if a future bug sets the field
+        # elsewhere. Penalizes the CORRECTION MAGNITUDE itself, independent of
+        # whether the resulting (CBF-corrected) trajectory was safe --
+        # otherwise PPO gets bailed out by CBF with zero learning signal for
+        # the risky gate choice that required the correction in the first
+        # place. coef defaults 0.0 (opt-in, no behavior change until tuned).
+        if self._e.policy_mode == "symbolic":
+            c.cbf_intervention = -self._r.cbf_intervention_coef * state.cbf_correction_norm
+
+        # Fast-finish time_penalty refund — displayed in `time` (not `terminal`)
+        # so the log shows net time cost ≈0 on a fast goal arrival. Only fires
+        # on actual goal success within fast_finish_late_step; collision /
+        # max_steps / out_of_fence / etc keep paying time_penalty normally.
+        if state.done_reason in ("goal_xy", "goal_3d", "success", "goal_reached"):
+            if state.step_count <= self._r.fast_finish_late_step:
+                c.time += -state.step_count * self._r.time_penalty_base
 
         # --- Update tracked state ---
         self._prev_horizontal_speed = state.horizontal_speed
@@ -205,11 +231,12 @@ class RewardManager:
             + c.smooth + c.yaw_rate_penalty + c.speed_penalty + c.fall_penalty
             + c.yaw_align
             + c.lateral + c.near_fence + c.start_zone
-            + c.pillar_too_close + c.pillar_clearance_soft + c.collision_course
+            + c.pillar_too_close + c.pillar_too_wide + c.pillar_tight_pass
             + c.bypass_reward
             + c.stage1_waypoint_bonus
             + c.post_pillar
             + c.terminal
+            + c.cbf_intervention
         )
         return c.total, c
 
@@ -218,7 +245,15 @@ class RewardManager:
     # ------------------------------------------------------------------ #
 
     def _reward_time(self, state: StepState) -> float:
-        return self._r.time_penalty_base
+        r = self._r
+        steps = state.step_count
+        if steps < 120:
+            return r.time_penalty_base
+        if steps < 200:
+            return r.time_penalty_tier2
+        if steps < 300:
+            return r.time_penalty_tier3
+        return r.time_penalty_tier4
 
     def _reward_altitude(self, state: StepState) -> float:
         z = float(state.pos[2])
@@ -269,7 +304,7 @@ class RewardManager:
         total = reward_face
 
         # Forward-goal bonus/penalty (thresholds/coefs configurable in RewardConfig)
-        good_thresh = r.stage1_yaw_good_thresh
+        good_thresh = state.yaw_good_thresh
         reward_coef = r.stage1_yaw_forward_bonus_coef
         penalty_coef = r.stage1_yaw_forward_penalty_coef
 
@@ -281,34 +316,44 @@ class RewardManager:
             else:
                 total += -penalty_coef * (good_thresh - camera_fwd_dot) / max(1e-6, good_thresh + 1.0)
 
-        # Stage1 backwards yaw penalty
-        if state.num_pillars == 0:
-            if (
-                state.horizontal_speed > r.stage1_backwards_yaw_speed_gate
-                and camera_fwd_dot < 0.0
-            ):
-                total += (
-                    -r.stage1_backwards_yaw_penalty_coef
-                    * state.horizontal_speed
-                    * abs(camera_fwd_dot)
-                )
+        # Stage1/Stage2 backwards yaw penalty -- Track A (raw) only. Written
+        # under the assumption translation is coupled to heading (ActionManager
+        # has no such coupling either, but this penalty is what taught Track A's
+        # policy not to fly fast while facing away from the goal). Track B
+        # (symbolic) breaks that assumption on purpose: GoalPrimitive is
+        # holonomic (goal.py's [cos,sin](heading_error) for [vx,vy]) --
+        # translating at speed while yaw is still catching up (FacePrimitive,
+        # own gate) is the intended, efficient behavior there, not a fault to
+        # penalize. Gating this off for symbolic avoids fighting that design.
+        if self._e.policy_mode != "symbolic":
+            # Stage1 backwards yaw penalty
+            if state.num_pillars == 0:
+                if (
+                    state.horizontal_speed > r.stage1_backwards_yaw_speed_gate
+                    and camera_fwd_dot < 0.0
+                ):
+                    total += (
+                        -r.stage1_backwards_yaw_penalty_coef
+                        * state.horizontal_speed
+                        * abs(camera_fwd_dot)
+                    )
 
-        # Stage2 backwards yaw penalty
-        if state.stage_index >= 2 and state.num_pillars > 0:
-            goal_vec = np.asarray(state.goal[:2], dtype=np.float32) - np.asarray(state.pos[:2], dtype=np.float32)
-            goal_dir = goal_vec / (float(np.linalg.norm(goal_vec)) + 1e-8)
-            vel_xy = np.asarray(state.vel[:2], dtype=np.float32)
-            speed_to_goal = float(np.dot(vel_xy, goal_dir))
-            if (
-                speed_to_goal > r.stage2_backwards_yaw_speed_to_goal_thresh
-                and state.horizontal_speed > r.stage2_backwards_yaw_horizontal_speed_thresh
-                and camera_fwd_dot < r.stage2_backwards_yaw_dot_thresh
-            ):
-                total += (
-                    -r.stage2_backwards_yaw_penalty_coef
-                    * speed_to_goal
-                    * abs(camera_fwd_dot)
-                )
+            # Stage2 backwards yaw penalty
+            if state.stage_index >= 2 and state.num_pillars > 0:
+                goal_vec = np.asarray(state.goal[:2], dtype=np.float32) - np.asarray(state.pos[:2], dtype=np.float32)
+                goal_dir = goal_vec / (float(np.linalg.norm(goal_vec)) + 1e-8)
+                vel_xy = np.asarray(state.vel[:2], dtype=np.float32)
+                speed_to_goal = float(np.dot(vel_xy, goal_dir))
+                if (
+                    speed_to_goal > r.stage2_backwards_yaw_speed_to_goal_thresh
+                    and state.horizontal_speed > r.stage2_backwards_yaw_horizontal_speed_thresh
+                    and camera_fwd_dot < r.stage2_backwards_yaw_dot_thresh
+                ):
+                    total += (
+                        -r.stage2_backwards_yaw_penalty_coef
+                        * speed_to_goal
+                        * abs(camera_fwd_dot)
+                    )
 
         return total
 
@@ -352,22 +397,30 @@ class RewardManager:
         return lateral, near_fence, start_zone
 
     def _reward_pillar_clearance(self, state: StepState):
+        """Light 2-sided shaping around a target clearance band, only while a
+        pillar is actually nearby (gated by pillar_zone_radius). Single linear
+        tier each side -- too-close (collision risk) and too-wide (sloppy
+        detour, encourages a tight flight path). Actual collision is handled
+        separately by terminal.collision_penalty; this is shaping only.
+        """
         r = self._r
         snap = state.pillar_collision_snap
         clearance_body = snap.get("clearance_body", float("inf"))
+        nearest_dist = snap.get("nearest_dist", float("inf"))
 
         too_close = 0.0
-        clearance_soft = 0.0
+        too_wide = 0.0
 
-        if np.isfinite(clearance_body):
-            if clearance_body < r.clearance_body_safe:
-                x = (r.clearance_body_safe - clearance_body) / max(r.clearance_body_safe, 1e-6)
-                clearance_soft = r.clearance_soft_penalty_coef * (x ** 2)
-            if clearance_body < r.clearance_body_danger:
-                x = (r.clearance_body_danger - clearance_body) / max(r.clearance_body_danger, 1e-6)
-                too_close = r.clearance_danger_penalty_coef * (x ** 2)
+        in_zone = np.isfinite(nearest_dist) and nearest_dist <= r.pillar_zone_radius
+        if in_zone and np.isfinite(clearance_body):
+            if clearance_body < r.pillar_clearance_close_thresh:
+                x = 1.0 - max(0.0, clearance_body) / max(r.pillar_clearance_close_thresh, 1e-6)
+                too_close = r.pillar_clearance_close_coef * x
+            elif clearance_body > r.pillar_clearance_wide_thresh:
+                over = clearance_body - r.pillar_clearance_wide_thresh
+                too_wide = max(r.pillar_clearance_wide_penalty_cap, r.pillar_clearance_wide_coef * over)
 
-        return too_close, clearance_soft
+        return too_close, too_wide
 
     def _reward_pillar_behavior(self, state: StepState) -> dict:
         # Delegates to pre-computed attention_info from PillarManager
@@ -384,7 +437,35 @@ class RewardManager:
         r = self._r
         # Goal success — no near-fence addition
         if state.done_reason in ("goal_xy", "goal_3d", "success", "goal_reached"):
-            return r.goal_xy_terminal_reward
+            steps = state.step_count
+            if steps <= r.fast_finish_early_step:
+                bonus = r.fast_finish_max_bonus
+            elif steps <= r.fast_finish_late_step:
+                span = r.fast_finish_late_step - r.fast_finish_early_step
+                frac = (steps - r.fast_finish_early_step) / span
+                bonus = r.fast_finish_max_bonus - frac * (r.fast_finish_max_bonus - r.fast_finish_min_bonus)
+            else:
+                bonus = 0.0
+            # One-shot yaw-at-arrival bonus/penalty (stage1_goal_yaw_* was
+            # defined in RewardConfig but never wired in -- per-step
+            # yaw_align alone gets drowned out by terminal+pbrs+rm (~150+21+
+            # 50) over a whole episode, too weak a gradient to teach p_face
+            # to actually arrive facing the goal even after policy converges
+            # (observed: terminal stayed a flat goal_xy_terminal_reward+
+            # fast_finish_bonus regardless of arrival yaw_align swinging
+            # -28..+8 across episodes). This ties a clean, undiluted signal
+            # directly to the one state that matters: heading at the moment
+            # of success.
+            # No neutral zone: anything below ok_dot is penalized (was a
+            # 0.0..ok_dot dead-zone with no bonus/penalty before).
+            yaw_dot = float(np.clip(math.cos(float(state.yaw_error)), -1.0, 1.0))
+            if yaw_dot >= r.stage1_goal_yaw_good_dot:
+                yaw_bonus = r.stage1_goal_yaw_bonus_good
+            elif yaw_dot >= r.stage1_goal_yaw_ok_dot:
+                yaw_bonus = r.stage1_goal_yaw_bonus_ok
+            else:
+                yaw_bonus = r.stage1_goal_yaw_penalty_bad
+            return r.goal_xy_terminal_reward + bonus + yaw_bonus
         # out_of_fence — full penalty, skip near-fence addition (already violated)
         if state.is_terminal and state.done_reason == "out_of_fence":
             return r.out_of_fence_penalty

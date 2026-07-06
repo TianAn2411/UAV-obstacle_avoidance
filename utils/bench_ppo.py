@@ -11,18 +11,33 @@ from stable_baselines3.common.save_util import load_from_zip_file
 from stable_baselines3.common.vec_env import DummyVecEnv
 
 
+def _is_symbolic() -> bool:
+    """Mirrors train.py's policy_mode toggle -- must match or this silently
+    finds a stale/wrong-mode checkpoint (or none at all)."""
+    try:
+        import yaml
+        with open("configs/ppo_config.yaml") as f:
+            return str((yaml.safe_load(f) or {}).get("policy_mode", "raw")) == "symbolic"
+    except Exception:
+        return False
+
+
 def find_model(stage: int) -> str:
+    is_symbolic = _is_symbolic()
+    model_prefix = f"ppo_drone_stage{stage}" if not is_symbolic else f"ppo_drone_symbolic_stage{stage}"
+    mode_subdir = "symbolics" if is_symbolic else "raws"
+
     candidates = [
-        f"ppo_drone_stage{stage}_interrupted.zip",
-        f"ppo_drone_stage{stage}_final.zip",
+        f"interrupt/{mode_subdir}/{model_prefix}_interrupted.zip",
+        f"{model_prefix}_final.zip",
     ]
-    ckpts = sorted(glob.glob(f"ckpts/stage{stage}/stage{stage}_*_steps.zip"))
+    ckpts = sorted(glob.glob(f"ckpts/stage{stage}/{mode_subdir}/stage{stage}_*_steps.zip"))
     if ckpts:
         candidates.insert(1, ckpts[-1])
     for p in candidates:
         if os.path.exists(p):
             return p
-    raise FileNotFoundError(f"No model found for stage {stage}")
+    raise FileNotFoundError(f"No model found for stage {stage} (policy_mode={'symbolic' if is_symbolic else 'raw'})")
 
 
 stage = int(sys.argv[1]) if len(sys.argv) > 1 else 2

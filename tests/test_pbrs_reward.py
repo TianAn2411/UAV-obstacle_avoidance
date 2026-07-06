@@ -102,6 +102,7 @@ def make_state(
         reset_info={},
         done_reason=done_reason,
         goal_xy_radius=1.0,
+        yaw_good_thresh=0.935,
         is_terminal=is_terminal,
         is_truncated=is_truncated,
         goal=GOAL,

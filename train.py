@@ -22,6 +22,7 @@ from obstacle_avoidance.configs.pillar_config import PillarConfig
 from obstacle_avoidance.configs.reward_config import RewardConfig
 from obstacle_avoidance.envs.drone_env import DroneObstacleEnv
 from obstacle_avoidance.envs.policy import DepthStateExtractor
+from obstacle_avoidance.symbolic_action.policy import SymbolicActorCriticPolicy
 from obstacle_avoidance.envs.monitor import TrainingMonitor
 from obstacle_avoidance.utils.bridge_factory import make_bridge, make_spawner
 from obstacle_avoidance.utils.logger import setup_logger
@@ -374,15 +375,42 @@ def run_training(stage: int = 1) -> None:
             f"[run_training] No curriculum entry found for stage={stage} in {config_path}"
         )
 
+    # Track A ("raw", default) vs Track B (SAGE, "symbolic") — global toggle, not
+    # per-curriculum-stage. Forwarded into `conf` below so EnvConfig picks it up
+    # via make_env()'s existing generic stage_conf -> EnvConfig field filter.
+    policy_mode = str(ppo_cfg.get("policy_mode", "raw"))
+    conf["policy_mode"] = policy_mode
+    is_symbolic = policy_mode == "symbolic"
+
+    # Same global-toggle treatment as policy_mode -- forwarded through
+    # stage_conf -> EnvConfig's generic field filter in make_env(). No effect
+    # when policy_mode="raw" (CBFShield only exists inside SAGEPipeline).
+    conf["cbf_enabled"] = bool(ppo_cfg.get("cbf_enabled", False))
+
     n_envs = ppo_cfg["n_envs"]
     check_freq = ppo_cfg.get("checkpoint_freq", 10000)
-    model_prefix = f"ppo_drone_stage{stage}"
+    # Separate model/ckpt namespace for symbolic mode — different network
+    # architecture (Beta gate head, no takeoff-assist), must never resume
+    # from / clobber a Track A checkpoint or vice versa. Stage-first layout:
+    # ckpts/stage{N}/raws|symbolics/ (mirrors interrupt/'s raws|symbolics
+    # split, just nested one level deeper under the stage).
+    model_prefix = f"ppo_drone_stage{stage}" if not is_symbolic else f"ppo_drone_symbolic_stage{stage}"
 
-    ckpt_dir = os.path.join(project_root, "ckpts", f"stage{stage}")
+    ckpt_dir = os.path.join(
+        project_root, "ckpts", f"stage{stage}", "symbolics" if is_symbolic else "raws"
+    )
     log_dir = os.path.join(project_root, "runs")
+    # Tensorboard/CSV split by track — env_logs/, train_main.log etc. stay under
+    # the shared runs/ (bridge_factory.py hardcodes runs/env_logs/ independently
+    # of this), only the tensorboard event dir moves so raw/symbolic runs never
+    # land in the same auto-incrementing PPO_N folder (SB3's reset_num_timesteps=
+    # False reuses the latest run_id, which is how raw+symbolic data ended up
+    # mixed in runs/PPO_0/ before this split).
+    tb_log_dir = os.path.join(log_dir, "symbolics" if is_symbolic else "raws")
 
     os.makedirs(ckpt_dir, exist_ok=True)
     os.makedirs(log_dir, exist_ok=True)
+    os.makedirs(tb_log_dir, exist_ok=True)
 
     run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     env_log_base = os.path.join(log_dir, "env_logs")  # env_logs/env_{rank}/stage{N}_{ts}/
@@ -393,19 +421,27 @@ def run_training(stage: int = 1) -> None:
     )
 
     logger.info(f"\n{'=' * 60}")
-    logger.info(f"STAGE {stage}: num_pillars={conf['num_pillars']} min_steps={conf['min_steps']}")
+    logger.info(f"STAGE {stage}: mode={policy_mode} num_pillars={conf['num_pillars']} min_steps={conf['min_steps']}")
     logger.info(f"{'=' * 60}\n")
 
     # --- Path definitions ---
-    interrupted_model_path = os.path.join(project_root, f"{model_prefix}_interrupted.zip")
+    # Interrupted checkpoints (Ctrl+C save) live under interrupt/{raws,symbolics}/,
+    # not loose in project_root -- same raw/symbolic separation as ckpt_dir/
+    # model_prefix above, just also physically organized by mode so browsing
+    # the directory doesn't require reading filenames to tell which is which.
+    interrupt_dir = os.path.join(project_root, "interrupt", "symbolics" if is_symbolic else "raws")
+    os.makedirs(interrupt_dir, exist_ok=True)
+
+    interrupted_model_path = os.path.join(interrupt_dir, f"{model_prefix}_interrupted.zip")
     final_model_path = os.path.join(project_root, f"{model_prefix}_final.zip")
+    _prev_prefix = f"ppo_drone_stage{stage - 1}" if not is_symbolic else f"ppo_drone_symbolic_stage{stage - 1}"
     prev_final_model_path = os.path.join(
         project_root,
-        f"ppo_drone_stage{stage - 1}_final.zip",
+        f"{_prev_prefix}_final.zip",
     )
-    interrupted_save_path = os.path.join(project_root, f"{model_prefix}_interrupted")
+    interrupted_save_path = os.path.join(interrupt_dir, f"{model_prefix}_interrupted")
     vecnorm_path = os.path.join(project_root, f"{model_prefix}_vecnormalize.pkl")
-    vecnorm_interrupted_path = os.path.join(project_root, f"{model_prefix}_vecnormalize_interrupted.pkl")
+    vecnorm_interrupted_path = os.path.join(interrupt_dir, f"{model_prefix}_vecnormalize_interrupted.pkl")
 
     latest_ckpt = find_latest_checkpoint(ckpt_dir, f"stage{stage}")
 
@@ -554,6 +590,7 @@ def run_training(stage: int = 1) -> None:
     _ckpt_label = resume_source if resume_source else "FRESH (no checkpoint)"
     _vn_label   = _vn_load_path  if _vn_load_path  else "FRESH (no pkl)"
     print("\n" + "=" * 70)
+    print(f"  [STAGE {stage}] MODE        : {policy_mode}{' (CBF on)' if conf.get('cbf_enabled') else ''}")
     print(f"  [STAGE {stage}] CHECKPOINT  : {_ckpt_label}")
     print(f"  [STAGE {stage}] VECNORMALIZE: {_vn_label}")
     print("=" * 70 + "\n")
@@ -597,6 +634,7 @@ def run_training(stage: int = 1) -> None:
         gamma=ppo_cfg.get("gamma", 0.99),
         gae_lambda=ppo_cfg.get("gae_lambda", 0.95),
         clip_range=ppo_cfg.get("clip_range", 0.2),
+        target_kl=ppo_cfg.get("target_kl", None),
         ent_coef=ppo_cfg.get("ent_coef", 0.0),
         vf_coef=ppo_cfg.get("vf_coef", 0.5),
         max_grad_norm=ppo_cfg.get("max_grad_norm", 0.5),
@@ -630,14 +668,14 @@ def run_training(stage: int = 1) -> None:
 
     else:
         logger.info("=" * 60)
-        logger.info(f"[MODEL LOAD] Fresh PPO model — stage {stage}")
+        logger.info(f"[MODEL LOAD] Fresh PPO model — stage {stage} (policy_mode={policy_mode})")
         logger.info("=" * 60)
         model = PPO(
-            "MultiInputPolicy",
+            SymbolicActorCriticPolicy if is_symbolic else "MultiInputPolicy",
             env,
             policy_kwargs=policy_kwargs,
             verbose=1,
-            tensorboard_log=log_dir,
+            tensorboard_log=tb_log_dir,
             **_ppo_override_kwargs,
         )
         _log_ppo_params(model)
@@ -727,6 +765,7 @@ def run_training(stage: int = 1) -> None:
             if conf.get("uniform_pillar", False)
             else conf.get("num_pillars", conf.get("min_pillars", 0))
         ),
+        is_symbolic=is_symbolic,
     )
 
     # --- Crash handler ---
@@ -767,7 +806,7 @@ def run_training(stage: int = 1) -> None:
     )
 
     try:
-        model.tensorboard_log = log_dir
+        model.tensorboard_log = tb_log_dir
 
         steps_done_in_stage = resume_timesteps - stage_start_step
         remaining_steps = max(int(conf["min_steps"]) - steps_done_in_stage, 0)
@@ -780,7 +819,13 @@ def run_training(stage: int = 1) -> None:
             total_timesteps=remaining_steps,
             callback=[ckpt_callback, monitor_callback],
             reset_num_timesteps=False,
+            tb_log_name=f"stage{stage}",
         )
+        # Remove non-picklable CNN cold-start patch (closure bound to model
+        # instance) before saving -- same fix as _SafeCheckpointCallback and
+        # save_interrupted_model() below; this final save was the one path
+        # missing it (TypeError: cannot pickle '_thread.lock' object).
+        model.__dict__.pop('_update_learning_rate', None)
         model.save(os.path.join(project_root, f"{model_prefix}_final"))
         env.save(vecnorm_path)
         logger.info(

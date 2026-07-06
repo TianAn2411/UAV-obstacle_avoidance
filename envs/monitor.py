@@ -22,6 +22,7 @@ class TrainingMonitor(BaseCallback):
         stage_start_step: int = 0,
         n_envs: int = 1,
         num_pillars: int = 0,
+        is_symbolic: bool = False,
     ):
         super().__init__(verbose)
         self.check_freq = check_freq
@@ -31,6 +32,7 @@ class TrainingMonitor(BaseCallback):
         self.stage_start_step = int(stage_start_step)
         self.n_envs = int(n_envs)
         self.num_pillars = str(num_pillars)
+        self.is_symbolic = bool(is_symbolic)
         self.episode_rewards = []
         self.episode_lengths = []
         self.total_episodes = 0
@@ -52,9 +54,22 @@ class TrainingMonitor(BaseCallback):
         self.total_done_count = 0
         self._ep_comp_window: dict[str, float] = {}
         self._ep_comp_window_count: int = 0
+        # SB3 only auto-logs train/std for policies with a log_std attribute
+        # (Gaussian) -- BetaDistribution has no such attribute (parameterized
+        # by alpha/beta concentration instead), so Track B gets no std log by
+        # default. Accumulated here per-step (policy.action_dist.distribution
+        # already reflects the batch just sampled by the time _on_step fires,
+        # no extra forward pass needed) and reduced to a mean at rollout end,
+        # same cadence/shape as SB3's own train/std.
+        self._beta_alpha_accum: list[float] = []
+        self._beta_beta_accum: list[float] = []
+        # Split by track (raw vs symbolic) — same runs/{raws,symbolics}/ layout
+        # as ckpt_dir/interrupt_dir in train.py, so a stage's CSV history never
+        # mixes data from the two (different reward/action-space semantics).
         self.progress_csv_path = os.path.join(
             PROJECT_ROOT,
             "runs",
+            "symbolics" if self.is_symbolic else "raws",
             f"training_progress_stage{self.stage}.csv",
         )
         self.progress_csv_fields = [
@@ -97,6 +112,15 @@ class TrainingMonitor(BaseCallback):
             self.training_env.set_attr("global_train_step", int(self.num_timesteps))
         except Exception:
             pass
+
+        if self.is_symbolic:
+            dist = getattr(getattr(self.model.policy, "action_dist", None), "distribution", None)
+            if dist is not None and hasattr(dist, "concentration1"):
+                try:
+                    self._beta_alpha_accum.append(float(dist.concentration1.detach().mean().item()))
+                    self._beta_beta_accum.append(float(dist.concentration0.detach().mean().item()))
+                except Exception:
+                    pass
 
         infos = self.locals.get("infos") or []
         for info in infos:
@@ -155,6 +179,21 @@ class TrainingMonitor(BaseCallback):
                 self.episode_lengths.append(ep_info['l'])
 
         return True
+
+    def _on_rollout_end(self) -> None:
+        if not self.is_symbolic or not self._beta_alpha_accum:
+            return
+        alpha_mean = float(np.mean(self._beta_alpha_accum))
+        beta_mean = float(np.mean(self._beta_beta_accum))
+        s = alpha_mean + beta_mean
+        # Beta(a,b) variance = a*b / (s^2 * (s+1)) -- same interpretive role
+        # as Gaussian's std: shrinks as the policy grows more confident/peaked.
+        beta_var = (alpha_mean * beta_mean) / (s * s * (s + 1.0))
+        self.model.logger.record("train/beta_alpha_mean", alpha_mean)
+        self.model.logger.record("train/beta_beta_mean", beta_mean)
+        self.model.logger.record("train/beta_std_mean", float(np.sqrt(max(0.0, beta_var))))
+        self._beta_alpha_accum.clear()
+        self._beta_beta_accum.clear()
 
     def _log_progress(self, write_csv: bool = False):
         elapsed = max(1e-6, time.time() - self.start_time)

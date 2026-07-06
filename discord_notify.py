@@ -79,8 +79,9 @@ def _stage_info(ppo_cfg: dict, stage: int) -> dict:
     return {}
 
 
-def _load_stage_start_step(base: Path, stage: int) -> int:
-    path = base / "ckpts" / f"stage{stage}" / f"stage{stage}_start_step.json"
+def _load_stage_start_step(base: Path, stage: int, ppo_cfg: dict) -> int:
+    is_symbolic = str(ppo_cfg.get("policy_mode", "raw")) == "symbolic"
+    path = base / "ckpts" / f"stage{stage}" / ("symbolics" if is_symbolic else "raws") / f"stage{stage}_start_step.json"
     try:
         with open(path) as f:
             return int(json.load(f).get("step", 0))
@@ -100,13 +101,22 @@ def _read_zip_step(zip_path: Path) -> int:
     return 0
 
 
-def _get_actual_step(base: Path, stage: int) -> int:
-    """Best-effort: read actual model num_timesteps from zip (interrupted > latest ckpt)."""
+def _get_actual_step(base: Path, stage: int, ppo_cfg: dict) -> int:
+    """Best-effort: read actual model num_timesteps from zip (interrupted > latest ckpt).
+
+    Mirrors train.py's raw/symbolic namespace split (model_prefix, ckpt_dir,
+    interrupt/{raws,symbolics}/) -- must match exactly or this silently reads
+    the wrong mode's (or a stale/nonexistent) checkpoint.
+    """
+    is_symbolic = str(ppo_cfg.get("policy_mode", "raw")) == "symbolic"
+    model_prefix = f"ppo_drone_stage{stage}" if not is_symbolic else f"ppo_drone_symbolic_stage{stage}"
+    mode_subdir = "symbolics" if is_symbolic else "raws"
+
     candidates = [
-        base / f"ppo_drone_stage{stage}_interrupted.zip",
+        base / "interrupt" / mode_subdir / f"{model_prefix}_interrupted.zip",
     ]
-    # Also check latest checkpoint in ckpts/stageN/
-    ckpt_dir = base / "ckpts" / f"stage{stage}"
+    # Also check latest checkpoint in ckpts/stage{N}/{raws,symbolics}/
+    ckpt_dir = base / "ckpts" / f"stage{stage}" / mode_subdir
     if ckpt_dir.exists():
         zips = sorted(ckpt_dir.glob(f"stage{stage}_*_steps.zip"))
         if zips:
@@ -128,6 +138,8 @@ def _fmt_start(stage: int, stage_cfg: dict, ppo_cfg: dict, prev_window: list,
     batch     = ppo_cfg.get("batch_size", "?")
     freeze_vz = stage_cfg.get("freeze_vz", "?")
     freeze_cn = stage_cfg.get("freeze_cnn", "?")
+    mode      = str(ppo_cfg.get("policy_mode", "raw"))
+    cbf_on    = bool(ppo_cfg.get("cbf_enabled", False))
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     min_steps_fmt = f"{min_steps:,}" if isinstance(min_steps, int) else str(min_steps)
     if isinstance(min_steps, int) and min_steps > 0:
@@ -137,9 +149,10 @@ def _fmt_start(stage: int, stage_cfg: dict, ppo_cfg: dict, prev_window: list,
     else:
         step_fmt = f"{actual_step:,}" if actual_step > 0 else "0"
     lines = [
-        f"🚀 **Training started — Stage {stage}**",
+        f"🚀 **Training started — Stage {stage} [{mode.upper()}{' +CBF' if mode == 'symbolic' and cbf_on else ''}]**",
         f"```",
         f"time       : {ts}",
+        f"mode       : {mode}{' (cbf_enabled)' if mode == 'symbolic' and cbf_on else ''}",
         f"step       : {step_fmt}",
         f"pillars    : {pillars}",
         f"min_steps  : {min_steps_fmt}",
@@ -190,7 +203,7 @@ def _bar(pct: float, width: int = 20) -> str:
 
 def _fmt_progress(row: dict, window: list, stage: int,
                   min_steps: int = 0, stage_start_step: int = 0,
-                  actual_step: int = 0) -> str:
+                  actual_step: int = 0, mode: str = "raw") -> str:
     """window = last N rows (including row) for rolling averages."""
     csv_step = int(float(row.get("train_step", 0)))
     step     = actual_step if actual_step > csv_step else csv_step
@@ -223,7 +236,7 @@ def _fmt_progress(row: dict, window: list, stage: int,
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     remaining_fmt = f"{remaining:,}" if remaining > 0 else "done"
     lines = [
-        f"📊 **Stage {stage} — {pct:.1f}%** `[{_bar(pct)}]`",
+        f"📊 **Stage {stage} [{mode.upper()}] — {pct:.1f}%** `[{_bar(pct)}]`",
         f"```",
         f"time       : {ts}",
         f"step       : {step:,}  (còn {remaining_fmt})",
@@ -243,14 +256,17 @@ def _fmt_progress(row: dict, window: list, stage: int,
 
 
 def watch(stage: int, base: Path) -> None:
-    csv_path = base / "runs" / f"training_progress_stage{stage}.csv"
-
     # Load PPO config + stage start step
     ppo_cfg          = _load_ppo_config(base)
+    is_symbolic      = str(ppo_cfg.get("policy_mode", "raw")) == "symbolic"
+    # Must match envs/monitor.py's TrainingMonitor.progress_csv_path split —
+    # raw/symbolic runs each write their own runs/{raws,symbolics}/ CSV so
+    # this poll loop reads the right one instead of waiting on a stale flat path.
+    csv_path = base / "runs" / ("symbolics" if is_symbolic else "raws") / f"training_progress_stage{stage}.csv"
     stage_cfg        = _stage_info(ppo_cfg, stage)
     min_s            = stage_cfg.get("min_steps", 0)
     min_s            = min_s if isinstance(min_s, int) else 0
-    stage_start_step = _load_stage_start_step(base, stage)
+    stage_start_step = _load_stage_start_step(base, stage, ppo_cfg)
 
     print(f"[discord] watching {csv_path}")
     print(f"[discord] notify every {ROW_INTERVAL} rows (~{ROW_INTERVAL * 10}k steps)")
@@ -261,7 +277,7 @@ def watch(stage: int, base: Path) -> None:
         time.sleep(POLL_INTERVAL_S)
 
     # CSV appeared — send start notification right away (no data rows needed)
-    _start_actual_step = _get_actual_step(base, stage)
+    _start_actual_step = _get_actual_step(base, stage, ppo_cfg)
     _send(_fmt_start(stage, stage_cfg, ppo_cfg, [], stage_start_step=stage_start_step,
                      actual_step=_start_actual_step))
     print(f"[discord] start message sent (actual_step={_start_actual_step})")
@@ -289,10 +305,11 @@ def watch(stage: int, base: Path) -> None:
         if rows_seen > 0 and latest_notify_idx > last_notified_row and latest_notify_idx < rows_seen:
             row      = reader[-1]
             window   = reader[-ROW_INTERVAL:]
-            actual_step = _get_actual_step(base, stage)
+            actual_step = _get_actual_step(base, stage, ppo_cfg)
             _send(_fmt_progress(row, window, stage, min_steps=min_s,
                                 stage_start_step=stage_start_step,
-                                actual_step=actual_step))
+                                actual_step=actual_step,
+                                mode=str(ppo_cfg.get("policy_mode", "raw"))))
             last_notified_row = latest_notify_idx
             print(f"[discord] notified at row {latest_notify_idx} "
                   f"(csv_step={row.get('train_step','?')} actual={actual_step or 'n/a'})")

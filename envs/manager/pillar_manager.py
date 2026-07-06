@@ -234,6 +234,7 @@ class PillarManager:
                     "rewarded": False,
                     "entry_goal_dist": None,
                     "min_dist": float("inf"),
+                    "min_clearance_body": float("inf"),
                     "pillar_t": float(np.dot(pillar_xy - start_xy, corridor_dir)),
                     "pass_step": None,
                     "post_pass_steps": 0,
@@ -251,8 +252,10 @@ class PillarManager:
 
             state = self.pillar_pass_states[name]
 
-            # Track min dist
+            # Track min dist / min body clearance (for tight-pass bonus)
             state["min_dist"] = min(float(state["min_dist"]), dist_to_pillar)
+            clearance_body_this = dist_to_pillar - p.drone_trigger_radius - pillar_r
+            state["min_clearance_body"] = min(float(state["min_clearance_body"]), clearance_body_this)
 
             # Mark entered when drone enters bypass enter radius
             if (not state["entered"]) and dist_to_pillar < p.bypass_enter_radius:
@@ -303,21 +306,20 @@ class PillarManager:
             and nearest_dist > self.prev_nearest_dist
         )
 
-        # Near-miss reward
-        reward_near_miss: float = 0.0
-        if np.isfinite(nearest_dist):
-            for state in self.pillar_pass_states.values():
-                if not state.get("rewarded"):
-                    continue
-                min_d = float(state.get("min_dist", float("inf")))
-                if min_d < r.stage2_near_miss_clearance_min:
-                    continue
-                if not state.get("near_miss_rewarded", False):
-                    state["near_miss_rewarded"] = True
-                    if min_d >= r.stage2_near_miss_clearance_good:
-                        reward_near_miss += float(r.stage2_near_miss_reward_good)
-                    else:
-                        reward_near_miss += float(r.stage2_near_miss_reward_ok)
+        # Tight-pass bonus: one-shot, fires when a completed pass's minimum body
+        # clearance landed in [pillar_tight_pass_min, pillar_tight_pass_max] --
+        # rewards skillful CLOSE avoidance specifically, on top of the base
+        # rm_subgoal_bonus (which fires on any pass regardless of tightness).
+        reward_tight_pass: float = 0.0
+        for state in self.pillar_pass_states.values():
+            if not state.get("rewarded"):
+                continue
+            if state.get("tight_pass_rewarded", False):
+                continue
+            state["tight_pass_rewarded"] = True
+            min_cb = float(state.get("min_clearance_body", float("inf")))
+            if r.pillar_tight_pass_min <= min_cb <= r.pillar_tight_pass_max:
+                reward_tight_pass += float(r.pillar_tight_pass_bonus)
 
         # Collision check
         is_collision, coll_type, heading_info = self._check_collision(
@@ -386,7 +388,7 @@ class PillarManager:
             "speed": speed,
             "stage1_subgoal_reward": stage1_reward,
             "pillars_passed_count": pillars_passed_count,
-            "near_miss_reward": reward_near_miss,
+            "pillar_tight_pass_bonus": reward_tight_pass,
             "entered_pillar_zone": self.entered_pillar_zone,
             "nearest_dist": nearest_dist,
         }

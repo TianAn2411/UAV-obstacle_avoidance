@@ -760,11 +760,14 @@ class ROSBridge(Node):
         self.gcs_connection_lost = bool(getattr(msg, "gcs_connection_lost", False))
         if self.preflight_ok:
             self._preflight_was_ever_ok = True
-        elif (
+        elif not self.is_armed and (
             old_preflight_ok                                    # True→False transition: always log
             or (self._preflight_was_ever_ok                    # sustained False after healthy: throttled
                 and time.monotonic() - self._last_preflight_debug_wall > 2.0)
         ):
+            # Preflight checks only matter pre-arm (GPS/RC/GCS/mission are
+            # never present in this offboard-vision setup, so pre_flight_checks_pass
+            # flickers false/true post-arm too — noise once armed and flying).
             self.log_preflight_debug(
                 context="[PX4 STATUS PREFLIGHT FALSE]",
                 force=True,
@@ -863,6 +866,11 @@ class ROSBridge(Node):
             try:
                 bev = self._pipeline.process(depth_msg, scan_msg, odom_msg)
                 self._latest_bev = bev
+                latency_ms = getattr(self._pipeline, "last_latency_ms", 0.0)
+                if latency_ms > 50.0:
+                    self.logger.warning(
+                        f"[EXTRACTOR] slow: {getattr(self._pipeline, 'last_breakdown', '')}"
+                    )
             except Exception as _e:
                 self.logger.debug(f"[EXTRACTOR] pipeline error: {_e}")
 
@@ -2019,9 +2027,12 @@ class ROSBridge(Node):
         )
 
         # 1. Stream velocity setpoint trước khi set OFFBOARD (PX4 yêu cầu stream > 0.5s)
-        for _ in range(50):
+        # Wall-clock bound, không phụ thuộc _spin_once's sleep — trước đây
+        # for _ in range(50) chỉ chạy ~0.1s vì _spin_once là stub sleep(0.002).
+        warmup_t0 = time.monotonic()
+        while time.monotonic() - warmup_t0 < 0.5:
             self.send_velocity(0.0, 0.0, 0.0, 0.0)
-            self._spin_once()
+            time.sleep(0.02)
 
         # 2. Chuyển sang OFFBOARD mode
         if not (self.offboard_enabled or self.nav_state == NavState.OFFBOARD):

@@ -1,13 +1,24 @@
 algorithm: PPO
 policy: MultiInputPolicy
 
+# Track A ("raw", default) vs Track B (SAGE, "symbolic"). Global toggle, not
+# per-curriculum-stage -- train.py forwards this into every stage's EnvConfig.
+# symbolic mode uses a separate checkpoint namespace (ckpts/symbolic_stage{N}/,
+# ppo_drone_symbolic_stage{N}_*) -- never resumes from / clobbers a raw run.
+policy_mode: "symbolic"  # "raw" | "symbolic"
+
+# CBFShield real QP vs identity passthrough — symbolic mode only (train.py
+# forwards this the same way as policy_mode, via stage_conf -> EnvConfig's
+# generic field filter in make_env()). No effect at all when policy_mode="raw".
+cbf_enabled: false
+
 seed: 42
 
 # Core PPO
 n_steps: 1024
 batch_size: 128
 n_epochs: 3
-learning_rate: 1.0e-4
+learning_rate: 3.0e-4
 
 # ── CNN cold-start per-group LR ────────────────────────────────────────────────
 # Chỉ kích hoạt 1 lần khi chuyển stage freeze_cnn→pillar (stage 1→2).
@@ -67,6 +78,13 @@ cnn_coldstart_fusion_lr_scale: 0.33 # fusion+heads: 0.33 × 1e-4 ≈ 3.3e-5 | ra
 gamma: 0.99
 gae_lambda: 0.95
 clip_range: 0.2
+target_kl: 0.05  # early-stop an epoch once approx_kl exceeds this (SB3 default: None = no protection).
+                 # Added after stage2 (training_progress_stage2.csv) showed reward crashes correlating
+                 # with approx_kl spikes to 0.08-0.10 with nothing stopping the update. 0.05 chosen from
+                 # this run's own data: several healthy checkpoints already sit at kl~0.07-0.076 with
+                 # good reward (rows 60/66), so a textbook-default 0.01-0.02 would trigger on normal
+                 # noise here -- 0.05 lets that pass while still catching the 0.08+ outliers that
+                 # coincided with the worst crashes (row 69: kl=0.103, worst reward in that window).
 ent_coef: 0.01
 vf_coef: 0.5
 max_grad_norm: 0.5
@@ -90,10 +108,17 @@ curriculum:
     min_pillars: 0
     max_pillars: 0
     uniform_pillar: false
-    min_steps: 295_000
+    min_steps: 90_000
     freeze_vz: false             # horizontal nav only — vz locked to 0
     freeze_cnn: true             # no pillars — CNN branch frozen, train state MLP only
     use_symbolic_extractor: true # 3-channel kinematic BEV (default False = 1-channel depth)
+    # Pre-episode yaw assist, ramping down over training (see _YAW_SCHEDULE in
+    # train_manager.py's reset()) — helps FacePrimitive's p_face gate learn
+    # from easier (closer-to-aligned) starts early on, fading to full-random
+    # start yaw by 300k combined steps. Stage1 carries this ramp forward via
+    # yaw_curriculum_carryover_steps instead of resetting it.
+    pre_episode_auto_yaw_enabled: true
+    yaw_curriculum_steps: 300000
     # Stage 0: zero noise — drone học hành vi cơ bản, nhiễu sẽ cản trở hội tụ
     obs_noise_pos_std: 0.0
     obs_noise_vel_std: 0.0
@@ -118,6 +143,12 @@ curriculum:
     freeze_vz: false             # vz unlocked — full altitude control
     freeze_cnn: true             # no pillars — CNN branch frozen, train state MLP only
     use_symbolic_extractor: true # 3-channel kinematic BEV (default False = 1-channel depth)
+    # Continues stage0's yaw-assist ramp instead of resetting to 100% assist
+    # at this stage boundary -- carryover = stage0's min_steps (295_000).
+    # _YAW_SCHEDULE hits its 300k/0.0-assist floor almost immediately once
+    # this stage starts (295_000 + a few thousand more steps).
+    pre_episode_auto_yaw_enabled: true
+    yaw_curriculum_carryover_steps: 90_000
     # Stage 1: nhiễu obs rất nhỏ, chưa có action noise/delay — vz mới mở, cần ổn định trước
     obs_noise_pos_std: 0.08
     obs_noise_vel_std: 0.04
@@ -129,16 +160,13 @@ curriculum:
     mass_scale_min: 0.95        # no mass randomisation — altitude control cần ổn định trước
     mass_scale_max: 1.05
     wind_speed_max: 0.5          # no wind
-    # Goal radius curriculum (stage-relative steps): start large, ramp down
-    goal_xy_radius_schedule_values: [3.0, 1.5, 1.0, 0.5]
-    goal_xy_radius_schedule_steps:  [0, 50_000, 150_000, 300_000]
 
   - stage: 2
     num_pillars: 2
     min_pillars: 2
     max_pillars: 3
-    uniform_pillar: false  
-    min_steps: 500_000
+    uniform_pillar: true 
+    min_steps: 800_000
     pre_episode_auto_yaw_enabled: true
     yaw_curriculum_steps: 300000  # 0→π over first 300k steps; full random after
     use_symbolic_extractor: true # 3-channel kinematic BEV (default False = 1-channel depth)
@@ -154,9 +182,7 @@ curriculum:
     mass_scale_min: 0.95         # ±5% mass variation
     mass_scale_max: 1.05
     wind_speed_max: 0.5          # up to 0.5 m/s wind
-    # Goal radius curriculum (stage-relative steps): start large, ramp down
-    goal_xy_radius_schedule_values: [3.0, 2.0, 1.5, 1.0, 0.5]
-    goal_xy_radius_schedule_steps:  [0, 50_000, 150_000, 300_000, 420_000]
+
 
   - stage: 3
     num_pillars: 3

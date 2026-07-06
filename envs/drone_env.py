@@ -32,7 +32,11 @@ class DroneObstacleEnv(gym.Env):
             ),
             "state": spaces.Box(-np.inf, np.inf, shape=(ecfg.state_dim,), dtype=np.float32),
         })
-        self.action_space = spaces.Box(-1.0, 1.0, shape=(ecfg.action_dim,), dtype=np.float32)
+        if ecfg.policy_mode == "symbolic":
+            # Beta-distribution gate head (SymbolicActorCriticPolicy) — native [0,1] support
+            self.action_space = spaces.Box(0.0, 1.0, shape=(ecfg.symbolic_num_gates,), dtype=np.float32)
+        else:
+            self.action_space = spaces.Box(-1.0, 1.0, shape=(ecfg.action_dim,), dtype=np.float32)
 
         self._manager = TrainManager(bridge, spawner, ecfg, rcfg, pcfg, env_id=env_id, log_dir=log_dir, start_step=start_step)
 

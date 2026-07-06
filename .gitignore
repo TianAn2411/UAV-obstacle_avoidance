@@ -45,3 +45,11 @@ test*.py
 *.sh
 README_TianAn.md
 runs/**/*.txt
+/ckpts
+/research
+/runs
+/interrupt
+discord_notify.py
+./codegraph
+/phifilter
+

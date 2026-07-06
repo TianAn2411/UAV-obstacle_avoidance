@@ -1,7 +1,7 @@
 # Per-machine CPU tuning — edit before training on a new machine.
 # Leaving pin_processes: false disables all affinity changes (safe default).
 
-pin_processes: False
+pin_processes: True
 
 
 # Main PPO process (GPU training + SB3 orchestration)
@@ -11,9 +11,7 @@ torch_interop_threads: 2         # inter-op parallelism (async graph nodes)
 
 # Per-env allocation: each rank gets cores [env_start + rank*cores_per_env .. +cores_per_env)
 # env_start = last core in main_process_cores + 1  (= 4 for "0-3")
-# 24-core machine example:
-#   rank 0 → cores 4-9   (6 cores: PX4 + Gazebo + 4 bridges + worker)
-#   rank 1 → cores 10-15
-#   rank 2 → cores 16-21
-#   cores 22-23 left for OS / other processes
-cores_per_env: 5
+# 24-core machine, n_envs=1:
+#   rank 0 → cores 4-18  (15 cores: PX4 + Gazebo + bridges — headroom for physics/render spikes)
+#   cores 19-23 left for OS / python worker (unpinned, per Tier-2 note below) / other processes
+cores_per_env: 15

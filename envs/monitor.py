@@ -168,6 +168,15 @@ class TrainingMonitor(BaseCallback):
                         pillars_total=int(info.get("pillars_spawned_total", 0)),
                     )
 
+                # SRK reservoir reset on episode boundary (HybridSRKExtractor only)
+                if done_flag:
+                    try:
+                        fe = self.model.policy.features_extractor
+                        if hasattr(fe, "reset") and callable(fe.reset):
+                            fe.reset()
+                    except Exception:
+                        pass
+
         # 1. Log tiến độ định kỳ [📊]
         if self.n_calls % self.check_freq == 0:
             self._log_progress(write_csv=False)

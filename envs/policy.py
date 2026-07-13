@@ -2,6 +2,18 @@ import torch
 import torch.nn as nn
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
+try:
+    import sys
+    import os
+    _srk_path = os.path.join(os.path.dirname(__file__), "..", "SRK-PPO_Deployment_Package", "RL_Deployment_Package")
+    if os.path.exists(_srk_path):
+        sys.path.insert(0, _srk_path)
+    from srk_layer import SRKEncoder
+    _SRK_AVAILABLE = True
+except ImportError:
+    _SRK_AVAILABLE = False
+    SRKEncoder = None
+
 
 # ─────────────────────────────────────────────
 #  Feature Extractor chính
@@ -81,3 +93,80 @@ class DepthStateExtractor(BaseFeaturesExtractor):
         s = self.state_fc(obs["state"])                      # (B, 64)
         fused = self.fusion_fc(torch.cat([d, s], dim=1))     # (B, 256)
         return self.fusion_norm(fused)                       # (B, 256)
+
+
+# ─────────────────────────────────────────────
+#  Hybrid SRK Feature Extractor (Stage 3+)
+# ─────────────────────────────────────────────
+class HybridSRKExtractor(BaseFeaturesExtractor):
+    """
+    Hybrid CNN + SRK feature extractor for stage 3+ when use_srk=true.
+
+    Architecture:
+        depth(3,84,84) → CNN → cnn_fc(5184→256) → 256
+        state(31) → SRKEncoder(history=15) → 128
+        concat(256+128=384) → fusion_fc(384→256) → LayerNorm → 256
+
+    CNN branch unchanged from DepthStateExtractor (spatial perception).
+    SRK branch replaces state MLP (temporal memory via reservoir).
+    """
+
+    def __init__(self, observation_space, features_dim: int = 256):
+        if not _SRK_AVAILABLE:
+            raise ImportError(
+                "SRKEncoder not available — check SRK-PPO_Deployment_Package/ exists "
+                "and srk_layer.py is accessible"
+            )
+
+        super().__init__(observation_space, features_dim)
+
+        depth_channels = observation_space["depth"].shape[0]
+        n_state = observation_space["state"].shape[0]
+
+        assert depth_channels == 3, f"Expects depth channels=3, got {depth_channels}"
+        assert n_state == 31, f"Expects state dim=31, got {n_state}"
+
+        # ── CNN branch (unchanged from DepthStateExtractor) ───────────────
+        self.cnn = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=4, stride=2), nn.SiLU(),
+            nn.Conv2d(32, 64, kernel_size=4, stride=2), nn.SiLU(),
+            nn.Conv2d(64, 64, kernel_size=3, stride=2), nn.SiLU(),
+            nn.Flatten(),
+        )
+        self.cnn_fc = nn.Sequential(
+            nn.Linear(5184, 256),
+            nn.SiLU(),
+        )
+
+        # ── SRK branch (replaces state MLP) ────────────────────────────────
+        # SRKEncoder: 15-step history buffer + reservoir + RFF + NGRC
+        # Output dim 128 (half of CNN's 256) — temporal memory is smaller
+        # feature space than spatial perception
+        self.srk_encoder = SRKEncoder(
+            input_dim=n_state,
+            hidden_dim=128,
+            output_dim=128,
+            history_len=15,
+            reservoir_size=256,
+            spectral_radius=0.9,
+            input_scaling=0.1,
+            leak_rate=0.3,
+        )
+
+        # ── Fusion → LayerNorm ─────────────────────────────────────────────
+        # cat([cnn(256), srk(128)]) = 384 → features_dim(256)
+        self.fusion_fc = nn.Sequential(
+            nn.Linear(256 + 128, features_dim),
+            nn.SiLU(),
+        )
+        self.fusion_norm = nn.LayerNorm(features_dim)
+
+    def forward(self, obs: dict) -> torch.Tensor:
+        d = self.cnn_fc(self.cnn(obs["depth"]))        # (B, 256)
+        s = self.srk_encoder(obs["state"])             # (B, 128)
+        fused = self.fusion_fc(torch.cat([d, s], dim=1))  # (B, 256)
+        return self.fusion_norm(fused)
+
+    def reset(self):
+        """Reset SRK reservoir state at episode boundary — called by env reset."""
+        self.srk_encoder.reset()

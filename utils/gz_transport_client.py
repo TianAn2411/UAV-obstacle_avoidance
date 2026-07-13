@@ -336,6 +336,36 @@ class GzTransportClient:
             return True
         return bool(result)
 
+    def get_model_pose(self, world_name, model_name, timeout_ms=500):
+        """Query model pose via /world/<world>/state service.
+        Returns (x, y, z) or None if not found."""
+        if not self.available() or Entity is None or Scene is None:
+            return None
+
+        req = Empty()
+        result = self._request(
+            service=f"/world/{world_name}/state",
+            req=req,
+            req_type=Empty,
+            rep_type=Scene,
+            timeout_ms=timeout_ms,
+        )
+        if not result:
+            return None
+
+        try:
+            for model in getattr(result, "model", []):
+                name = getattr(model, "name", "")
+                if name == model_name:
+                    pose = getattr(model, "pose", None)
+                    if pose:
+                        pos = getattr(pose, "position", None)
+                        if pos:
+                            return (float(pos.x), float(pos.y), float(pos.z))
+        except Exception:
+            pass
+        return None
+
     def _get_marker_pub(self):
         if GzMarker is None or not self.available():
             return None

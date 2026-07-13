@@ -105,8 +105,8 @@ class PX4InstanceManager:
         if gz_run:
             self.env_vars["PX4_GZ_MODEL_POSE"] = self.start_pose
             self.env_vars["PX4_SIM_MODEL"] = "gz_x500_depth"
+            self.env_vars["PX4_SYS_AUTOSTART"] = "4002"
             self.env_vars.pop("PX4_GZ_MODEL_NAME", None)
-            self.env_vars.pop("PX4_SYS_AUTOSTART", None)
         else:
             # Reconnect to the existing Gazebo model. px4-rc.simulator chooses
             # attach mode only when PX4_GZ_MODEL_NAME is set and PX4_SIM_MODEL is absent.

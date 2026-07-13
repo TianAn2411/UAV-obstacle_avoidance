@@ -98,6 +98,10 @@ class PillarManager:
         # Dynamic pillar random-walk state: name -> {origin, heading, speed, t_until_change}
         self._dynamic_pillars: dict[str, dict] = {}
 
+        # Dynamic pillar pose cache (updated via Gazebo subscription callback, read by _step_dynamic_pillars)
+        self._dynamic_pose_cache: dict[str, np.ndarray] = {}
+        self._dynamic_pose_sub_active: bool = False
+
     # ------------------------------------------------------------------ #
     # Main interface                                                      #
     # ------------------------------------------------------------------ #
@@ -279,6 +283,14 @@ class PillarManager:
                         logger.warning(f"[PILLAR] dynamic spawn failed env={self._env_id} name={pose['name']}")
                 except Exception as e:
                     logger.warning(f"[PILLAR] dynamic spawn exception env={self._env_id} name={pose['name']}: {e}")
+
+            # Subscribe to dynamic pose updates (fire-once, non-blocking callback)
+            if not self._dynamic_pose_sub_active:
+                try:
+                    self._spawner.subscribe_dynamic_poses(self._dynamic_pose_callback)
+                    self._dynamic_pose_sub_active = True
+                except Exception as e:
+                    logger.warning(f"[PILLAR] dynamic pose subscribe failed env={self._env_id}: {e}")
             self._dynamic_pool_names = [pose["name"] for pose in dyn_batch_poses]
             self._dynamic_pool_initialized = True
         else:
@@ -337,6 +349,20 @@ class PillarManager:
         except Exception as e:
             logger.warning(f"[PILLAR] park_dynamic_pool failed env={self._env_id}: {e}")
 
+    def _dynamic_pose_callback(self, msg):
+        """Gazebo subscription callback — update pose cache for active dynamic pillars.
+        Called async by ROS executor, must be thread-safe (dict update is atomic in CPython)."""
+        try:
+            poses = getattr(msg, "pose", [])
+            for p in poses:
+                name = getattr(p, "name", "")
+                if name and name in self._dynamic_pillars:
+                    pos = getattr(p, "position", None)
+                    if pos:
+                        self._dynamic_pose_cache[name] = np.array([float(pos.x), float(pos.y)], dtype=np.float32)
+        except Exception:
+            pass
+
     def _step_dynamic_pillars(self, dt: float) -> None:
         """Dead-reckons each dynamic pillar's position every step for
         collision/reward bookkeeping (matches Gazebo's own VelocityControl
@@ -376,6 +402,10 @@ class PillarManager:
                 heading_vec = np.array([math.cos(state["heading"]), math.sin(state["heading"])], dtype=np.float32)
                 new_xy = cur_xy + state["speed"] * heading_vec * dt
                 heading_changed = True
+
+            # Override dead-reckoned position with Gazebo ground-truth from subscription cache
+            if name in self._dynamic_pose_cache:
+                new_xy = self._dynamic_pose_cache[name].copy()
 
             meta["x"] = float(new_xy[0])
             meta["y"] = float(new_xy[1])

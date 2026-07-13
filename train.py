@@ -22,7 +22,7 @@ from obstacle_avoidance.configs.env_config import EnvConfig
 from obstacle_avoidance.configs.pillar_config import PillarConfig
 from obstacle_avoidance.configs.reward_config import RewardConfig
 from obstacle_avoidance.envs.drone_env import DroneObstacleEnv
-from obstacle_avoidance.envs.policy import DepthStateExtractor
+from obstacle_avoidance.envs.policy import DepthStateExtractor, HybridSRKExtractor, _SRK_AVAILABLE
 from obstacle_avoidance.symbolic_action.policy import SymbolicActorCriticPolicy
 from obstacle_avoidance.envs.monitor import TrainingMonitor
 from obstacle_avoidance.utils.bridge_factory import make_bridge, make_spawner
@@ -408,6 +408,17 @@ def run_training(stage: int = 1) -> None:
     conf["cbf_safety_margin"] = float(ppo_cfg.get("cbf_safety_margin", 0.5))
     conf["cbf_alpha"] = float(ppo_cfg.get("cbf_alpha", 2.0))
 
+    # SRK-PPO toggle (stage 3+ temporal memory via reservoir)
+    use_srk = bool(ppo_cfg.get("use_srk", False))
+    srk_start_stage = int(ppo_cfg.get("srk_start_stage", 3))
+    use_srk_this_stage = use_srk and stage >= srk_start_stage
+
+    if use_srk_this_stage and not _SRK_AVAILABLE:
+        raise ImportError(
+            f"[SRK] use_srk=true for stage {stage}, but SRKEncoder not available. "
+            "Check SRK-PPO_Deployment_Package/ exists and srk_layer.py is accessible."
+        )
+
     n_envs = ppo_cfg["n_envs"]
     check_freq = ppo_cfg.get("checkpoint_freq", 10000)
     # Separate model/ckpt namespace for symbolic mode — different network
@@ -415,11 +426,17 @@ def run_training(stage: int = 1) -> None:
     # from / clobber a Track A checkpoint or vice versa. Stage-first layout:
     # ckpts/stage{N}/raws|symbolics/ (mirrors interrupt/'s raws|symbolics
     # split, just nested one level deeper under the stage).
+    # SRK adds a second split within each track: raws/ → {raws, srk_raws},
+    # symbolics/ → {symbolics, srk_symbolics} — SRK models use HybridSRKExtractor
+    # (different architecture), must not resume from / clobber vanilla PPO.
+    if use_srk_this_stage:
+        track_subdir = "srk_symbolics" if is_symbolic else "srk_raws"
+    else:
+        track_subdir = "symbolics" if is_symbolic else "raws"
+
     model_prefix = f"ppo_drone_stage{stage}" if not is_symbolic else f"ppo_drone_symbolic_stage{stage}"
 
-    ckpt_dir = os.path.join(
-        project_root, "ckpts", f"stage{stage}", "symbolics" if is_symbolic else "raws"
-    )
+    ckpt_dir = os.path.join(project_root, "ckpts", f"stage{stage}", track_subdir)
     log_dir = os.path.join(project_root, "runs")
     # Tensorboard/CSV split by track — env_logs/, train_main.log etc. stay under
     # the shared runs/ (bridge_factory.py hardcodes runs/env_logs/ independently
@@ -498,31 +515,19 @@ def run_training(stage: int = 1) -> None:
 
     # --- Stage start step (for monitor / curriculum accounting) ---
     stage_start_step = load_stage_start_step(ckpt_dir, stage)
-    if stage > 0 and stage_start_step == 0:
-        # No metadata yet: try to infer from previous stage's final model
-        if os.path.exists(prev_final_model_path):
-            try:
-                prev_probe = PPO.load(prev_final_model_path)
-                step = int(getattr(prev_probe, "num_timesteps", 0))
-                del prev_probe
-                save_stage_start_step(
-                    ckpt_dir, stage, step, source_path=prev_final_model_path
-                )
-                stage_start_step = step
-                logger.info(
-                    f"[STAGE START STEP] inferred from prev_final={prev_final_model_path} "
-                    f"stage_start_step={stage_start_step}"
-                )
-            except Exception as e:
-                logger.warning(
-                    f"[STAGE START STEP] failed to infer from {prev_final_model_path}: {e}. "
-                    f"fallback=0"
-                )
-        else:
-            logger.warning(
-                f"[STAGE START STEP] metadata missing for stage={stage} and no prev_final found. "
-                f"fallback=0"
-            )
+    if stage > 0 and stage_start_step == 0 and resume_source == prev_final_model_path:
+        # Stage-transfer: resume_source is prev stage's final model → use its
+        # timestep count (already probed above via zipfile read, line 486-497)
+        # as this stage's start step. Avoid re-loading the model via PPO.load()
+        # which can fail when optimizer state has different parameter groups.
+        save_stage_start_step(
+            ckpt_dir, stage, resume_timesteps, source_path=prev_final_model_path
+        )
+        stage_start_step = resume_timesteps
+        logger.info(
+            f"[STAGE START STEP] stage-transfer from prev_final={prev_final_model_path} "
+            f"stage_start_step={stage_start_step}"
+        )
 
     logger.info(
         "[CURRICULUM RESUME] "
@@ -610,8 +615,9 @@ def run_training(stage: int = 1) -> None:
     # --- Terminal banner: resume sources ---
     _ckpt_label = resume_source if resume_source else "FRESH (no checkpoint)"
     _vn_label   = _vn_load_path  if _vn_load_path  else "FRESH (no pkl)"
+    _srk_label = f" (SRK stage {srk_start_stage}+)" if use_srk else ""
     print("\n" + "=" * 70)
-    print(f"  [STAGE {stage}] MODE        : {policy_mode}{' (CBF on)' if conf.get('cbf_enabled') else ''}")
+    print(f"  [STAGE {stage}] MODE        : {policy_mode}{' (CBF on)' if conf.get('cbf_enabled') else ''}{_srk_label}")
     print(f"  [STAGE {stage}] CHECKPOINT  : {_ckpt_label}")
     print(f"  [STAGE {stage}] VECNORMALIZE: {_vn_label}")
     print("=" * 70 + "\n")
@@ -624,8 +630,16 @@ def run_training(stage: int = 1) -> None:
         logger.info("[VECNORM] fresh stats (no prior pkl found)")
 
     # --- Policy kwargs ---
+    # SRK branch: HybridSRKExtractor (CNN for depth + SRK for state temporal memory)
+    # Vanilla branch: DepthStateExtractor (CNN for depth + MLP for state)
+    if use_srk_this_stage:
+        features_extractor_class = HybridSRKExtractor
+        logger.info(f"[SRK] Using HybridSRKExtractor for stage {stage} (use_srk=true)")
+    else:
+        features_extractor_class = DepthStateExtractor
+
     policy_kwargs = dict(
-        features_extractor_class=DepthStateExtractor,
+        features_extractor_class=features_extractor_class,
         features_extractor_kwargs=dict(features_dim=256),
         net_arch=dict(pi=[128, 128], vf=[128, 128]),
         activation_fn=nn.SiLU,
@@ -729,10 +743,52 @@ def run_training(stage: int = 1) -> None:
         )
         _log_ppo_params(model)
 
-    # --- CNN freeze (stage 0/1: no pillars, train state MLP only) ---
+        # --- SRK transfer learning: load CNN weights from vanilla PPO checkpoint ---
+        # When starting SRK training for the first time (fresh SRK model), check
+        # if there's a vanilla PPO checkpoint from the previous stage or current
+        # stage. If found, load CNN+cnn_fc weights into the fresh SRK model's CNN
+        # branch. The SRK state branch (srk_encoder) starts from scratch, but CNN
+        # spatial perception can leverage what vanilla PPO already learned.
+        if use_srk_this_stage:
+            # Check: (1) current stage vanilla final, (2) prev stage vanilla final
+            vanilla_ckpt_dir = os.path.join(project_root, "ckpts", f"stage{stage}", "symbolics" if is_symbolic else "raws")
+            vanilla_current_final = os.path.join(project_root, f"ppo_drone_stage{stage}.zip" if not is_symbolic else f"ppo_drone_symbolic_stage{stage}.zip")
+            vanilla_prev_final = os.path.join(project_root, f"ppo_drone_stage{stage-1}.zip" if not is_symbolic else f"ppo_drone_symbolic_stage{stage-1}.zip") if stage > 0 else None
+
+            transfer_source = None
+            if os.path.exists(vanilla_current_final):
+                transfer_source = vanilla_current_final
+            elif vanilla_prev_final and os.path.exists(vanilla_prev_final):
+                transfer_source = vanilla_prev_final
+
+            if transfer_source:
+                try:
+                    logger.info(f"[SRK TRANSFER] Loading CNN weights from vanilla checkpoint: {transfer_source}")
+                    vanilla_model = _ppo_load(transfer_source, env=env, device="cpu")
+                    vanilla_fe = vanilla_model.policy.features_extractor
+
+                    # Copy CNN+cnn_fc weights (both have same architecture in vanilla and SRK)
+                    srk_fe = model.policy.features_extractor
+                    srk_fe.cnn.load_state_dict(vanilla_fe.cnn.state_dict())
+                    srk_fe.cnn_fc.load_state_dict(vanilla_fe.cnn_fc.state_dict())
+
+                    # Move to GPU (model is already on cuda from _ppo_override_kwargs)
+                    srk_fe.to(model.device)
+                    logger.info("[SRK TRANSFER] CNN weights transferred successfully")
+                    del vanilla_model  # free memory
+                except Exception as e:
+                    logger.warning(f"[SRK TRANSFER] Failed to load CNN weights: {e}")
+            else:
+                logger.info("[SRK TRANSFER] No vanilla checkpoint found for transfer learning — CNN starts from scratch")
+
+    # --- CNN freeze (stage 0/1: no pillars, train state branch only) ---
     freeze_cnn = bool(conf.get("freeze_cnn", False))
     extractor = model.policy.features_extractor
-    _state_fc0 = extractor.state_fc[0]
+    # SRK has srk_encoder (not state_fc), need reference for cold-start logic below
+    if use_srk_this_stage:
+        _state_branch_first_param = next(extractor.srk_encoder.parameters())
+    else:
+        _state_branch_first_param = extractor.state_fc[0].weight
     for name, param in extractor.named_parameters():
         if name.startswith("cnn"):  # covers cnn.* and cnn_fc.*
             param.requires_grad = not freeze_cnn
@@ -750,13 +806,17 @@ def run_training(stage: int = 1) -> None:
         _s_state  = float(ppo_cfg.get("cnn_coldstart_state_lr_scale",  0.1))
         _s_fusion = float(ppo_cfg.get("cnn_coldstart_fusion_lr_scale", 0.33))
         # Build param-id sets across ALL feature extractors (pi/vf may be separate copies).
+        # SRK has srk_encoder instead of state_fc.
         _cnn_ids, _state_ids, _fusion_ids = set(), set(), set()
         for _fe in {model.policy.features_extractor,
                     model.policy.pi_features_extractor,
                     model.policy.vf_features_extractor}:
             for p in _fe.cnn.parameters():        _cnn_ids.add(id(p))
             for p in _fe.cnn_fc.parameters():     _cnn_ids.add(id(p))
-            for p in _fe.state_fc.parameters():   _state_ids.add(id(p))
+            if hasattr(_fe, "state_fc"):
+                for p in _fe.state_fc.parameters():   _state_ids.add(id(p))
+            elif hasattr(_fe, "srk_encoder"):
+                for p in _fe.srk_encoder.parameters(): _state_ids.add(id(p))
             for p in _fe.fusion_fc.parameters():  _fusion_ids.add(id(p))
             for p in _fe.fusion_norm.parameters(): _fusion_ids.add(id(p))
 
@@ -870,6 +930,13 @@ def run_training(stage: int = 1) -> None:
             f"[TRAIN STEPS] stage_start={stage_start_step} resume={resume_timesteps} "
             f"done_in_stage={steps_done_in_stage} min_steps={conf['min_steps']} remaining={remaining_steps}"
         )
+
+        # Sync _num_timesteps_at_start before .learn() so progress_remaining
+        # calculation is correct when reset_num_timesteps=False (stage transfer
+        # or interrupted resume). SB3 only sets this automatically when
+        # reset_num_timesteps=True, otherwise it reuses a stale value from the
+        # checkpoint, causing progress_remaining to go negative and lr=0.
+        model._num_timesteps_at_start = model.num_timesteps
 
         model.learn(
             total_timesteps=remaining_steps,

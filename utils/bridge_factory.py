@@ -2689,6 +2689,16 @@ class Spawner:
                 return False
         return False
 
+    def subscribe_dynamic_poses(self, callback):
+        """Subscribe to /world/<world>/dynamic_pose/info (fire-once, updates callback cache)."""
+        if self.gz_client is not None and self.gz_client.available():
+            try:
+                return self.gz_client.subscribe_pose_v(self.world_name, callback)
+            except Exception as exc:
+                self.logger.warning(f"[SPAWNER SUBSCRIBE POSE_V FAIL] reason={exc}")
+                return False
+        return False
+
     def spawn_marker(self, name, x, y, r=0.1, g=0.3, b=1.0, radius=0.6, height=0.08):
         """Flat colored disc, no collision -- debug visual (e.g. mark active pillars)."""
         if spawn_world is not None:
@@ -2740,6 +2750,23 @@ class Spawner:
             timeout_ms=timeout_ms,
             max_wait_s=float(timeout_ms) / 1000.0 + 1.5,
         )
+
+    def get_model_pose(self, name):
+        """Query ground-truth pose from Gazebo for dynamic pillar drift correction.
+        Returns (x, y, z) or None if query fails."""
+        if self.gz_client is not None and self.gz_client.available():
+            try:
+                pose = self._gz_spin_wrap(
+                    self.gz_client.get_model_pose,
+                    self.world_name,
+                    name,
+                    max_wait_s=0.5,
+                )
+                if pose is not None and len(pose) >= 3:
+                    return (float(pose[0]), float(pose[1]), float(pose[2]))
+            except Exception:
+                pass
+        return None
 
     def _scene_entity_names(self, timeout_ms=3000):
         if self.gz_client is not None and self.gz_client.available():

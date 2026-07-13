@@ -47,6 +47,14 @@ class PillarManager:
         self._pool_initialized: bool = False
         self._pool_names: list[str] = []
         self._actual_num_pillars: int = 0
+        self._actual_main_pillars: int = 0
+        self._actual_decor_pillars: int = 0
+
+        # Dynamic pillar pool -- separate from the static pool above because
+        # it needs a non-static (VelocityControl-driven) Gazebo model, which
+        # can't be baked onto the same reused static-pillar entities.
+        self._dynamic_pool_initialized: bool = False
+        self._dynamic_pool_names: list[str] = []
 
         self._reset_episode_state()
 
@@ -69,16 +77,12 @@ class PillarManager:
         self._bypass_group_near_rewarded: list[bool] = []
         self._bypass_group_idx: int = 0
 
-        # Active corridor pillar tracking (DFA Option B)
-        self._active_corridor_pillar_names: set = set()
-        self._active_corridor_pillar_count: int = 0
-        self._corridor_avoided_count: int = 0
-
         # Ring subgoal state
         self._ring_sgs: list[dict] = []
         self._ring_claimed: dict[int, int] = {}
 
-        # Stage1 subgoal state (straight-line waypoints, num_pillars==0 only)
+        # Stage1 subgoal state (straight-line waypoints -- now the ALWAYS-on
+        # source for dfa_q/dfa_N, regardless of pillar count)
         self._stage1_sgs_xy: list[np.ndarray] = []
         self._stage1_reached: list[bool] = []
         self._stage1_near_rewarded: list[bool] = []
@@ -90,6 +94,9 @@ class PillarManager:
         self._last_bypass_info: dict = {"reward": 0.0, "active_subgoal": None, "clearance_gain": 0.0}
         self._last_ring_info: dict = {"reward": 0.0}
         self._last_attention_info: dict = {"attention_reward": 0.0, "post_pillar_reward": 0.0}
+
+        # Dynamic pillar random-walk state: name -> {origin, heading, speed, t_until_change}
+        self._dynamic_pillars: dict[str, dict] = {}
 
     # ------------------------------------------------------------------ #
     # Main interface                                                      #
@@ -107,17 +114,30 @@ class PillarManager:
 
         p = self._p
         if p.uniform_pillar and p.max_pillars > p.min_pillars:
-            self._actual_num_pillars = int(np.random.randint(p.min_pillars, p.max_pillars + 1))
+            self._actual_main_pillars = int(np.random.randint(p.min_pillars, p.max_pillars + 1))
         else:
-            self._actual_num_pillars = p.min_pillars if p.min_pillars > 0 else p.num_pillars
+            self._actual_main_pillars = p.min_pillars if p.min_pillars > 0 else p.num_pillars
+
+        if p.uniform_pillar and p.max_decor_pillars > p.min_decor_pillars:
+            self._actual_decor_pillars = int(np.random.randint(p.min_decor_pillars, p.max_decor_pillars + 1))
+        else:
+            self._actual_decor_pillars = p.min_decor_pillars if p.min_decor_pillars > 0 else p.num_decor_pillars
+
+        self._actual_num_pillars = self._actual_main_pillars + self._actual_decor_pillars
 
         if self._actual_num_pillars == 0:
             self.last_pillar_metadata = []
+            self._park_dynamic_pool()
             return
 
         prefix = f"pillar_env{self._env_id}__"
         sampled = self._sample_pillar_metadata(prefix)
         candidate_metadata = sampled["metadata"]
+
+        # Carve out the dynamic subset (if any) BEFORE naming/spawning the
+        # static pool, so the static pool never also spawns something at the
+        # same position -- see _setup_dynamic_pillars docstring.
+        candidate_metadata, dyn_named_metadata = self._setup_dynamic_pillars(candidate_metadata)
 
         # Build named_metadata with pool slot names
         named_metadata: list[dict] = []
@@ -128,6 +148,8 @@ class PillarManager:
                 "y": float(m["y"]),
                 "radius": float(m.get("radius", p.pillar_pool_radius)),
                 "height": float(m.get("height", p.pillar_pool_height)),
+                "blocking": bool(m.get("blocking", True)),
+                "formation_id": m.get("formation_id"),
             })
 
         max_pool = p.max_pillars if p.max_pillars > 0 else p.num_pillars
@@ -177,9 +199,197 @@ class PillarManager:
             except Exception as e:
                 logger.warning(f"[PILLAR] move_pillars_batch failed env={self._env_id}: {e}")
 
-        self.last_pillar_metadata = named_metadata
+        self.last_pillar_metadata = named_metadata + dyn_named_metadata
         self._setup_bypass_subgoals(start, goal)
         self._setup_ring_subgoals()
+
+    def _setup_dynamic_pillars(self, candidate_metadata: list[dict]) -> tuple[list[dict], list[dict]]:
+        """Pick a random subset of this episode's sampled pillar positions to
+        be driven by Gazebo's VelocityControl plugin instead of staying
+        static. Returns (remaining_static_candidates, dynamic_named_metadata)
+        -- the chosen positions are removed from the static candidate list so
+        the static pool doesn't also spawn something there.
+
+        Maintains its own persistent pool of non-static entities (spawned
+        once, repositioned via set_pose only at episode reset -- same
+        convention as the static pool in reset_episode), sized
+        p.num_dynamic_pillars; unused slots this episode get parked far away
+        exactly like unused static slots.
+
+        Port note: subgoal geometry (_setup_bypass_subgoals/_setup_ring_subgoals)
+        is computed once from the spawn position and does NOT track a moving
+        pillar afterward -- acceptable drift for a soft reward-shaping signal.
+        """
+        self._dynamic_pillars = {}
+        p = self._p
+        dyn_max = int(p.num_dynamic_pillars)
+
+        if dyn_max <= 0:
+            return candidate_metadata, []
+
+        n_dyn = 0
+        dynamic_targets: list[dict] = []
+        remaining = list(candidate_metadata)
+        if p.dynamic_pillar_enabled and candidate_metadata:
+            n_dyn = min(dyn_max, len(candidate_metadata))
+            chosen_idx = set(int(i) for i in np.random.choice(len(candidate_metadata), size=n_dyn, replace=False))
+            dynamic_targets = [m for i, m in enumerate(candidate_metadata) if i in chosen_idx]
+            remaining = [m for i, m in enumerate(candidate_metadata) if i not in chosen_idx]
+
+        dyn_named_metadata: list[dict] = []
+        dyn_batch_poses: list[dict] = []
+        for i in range(dyn_max):
+            name = f"pillar_dyn_env{self._env_id}__{i}"
+            if i < len(dynamic_targets):
+                src = dynamic_targets[i]
+                x, y = float(src["x"]), float(src["y"])
+                radius = float(src.get("radius", p.pillar_pool_radius))
+                height = float(src.get("height", p.pillar_pool_height))
+                dyn_named_metadata.append({
+                    "name": name, "x": x, "y": y, "radius": radius, "height": height,
+                    "blocking": bool(src.get("blocking", True)), "formation_id": src.get("formation_id"),
+                })
+                dyn_batch_poses.append({
+                    "name": name, "x": x, "y": y, "z": float(0.5 * height), "yaw": 0.0, "height": height,
+                })
+                self._dynamic_pillars[name] = {
+                    "origin": np.array([x, y], dtype=np.float32),
+                    "heading": float(np.random.uniform(0.0, 2.0 * math.pi)),
+                    "speed": float(np.random.uniform(p.dynamic_pillar_speed_min, p.dynamic_pillar_speed_max)),
+                    "t_until_change": float(np.random.uniform(0.5, p.dynamic_pillar_dir_change_interval_s)),
+                }
+            else:
+                dyn_batch_poses.append({
+                    "name": name,
+                    "x": float(p.pillar_pool_parking_x + i),
+                    "y": float(p.pillar_pool_parking_y),
+                    "z": float(0.5 * p.pillar_pool_height),
+                    "yaw": 0.0,
+                    "height": float(p.pillar_pool_height),
+                })
+
+        if not self._dynamic_pool_initialized:
+            for pose in dyn_batch_poses:
+                try:
+                    ok = self._spawner.spawn_dynamic_pillar(
+                        name=pose["name"], x=pose["x"], y=pose["y"],
+                        radius=p.pillar_pool_radius, height=pose["height"],
+                    )
+                    if not ok:
+                        logger.warning(f"[PILLAR] dynamic spawn failed env={self._env_id} name={pose['name']}")
+                except Exception as e:
+                    logger.warning(f"[PILLAR] dynamic spawn exception env={self._env_id} name={pose['name']}: {e}")
+            self._dynamic_pool_names = [pose["name"] for pose in dyn_batch_poses]
+            self._dynamic_pool_initialized = True
+        else:
+            try:
+                self._spawner.move_pillars_batch(dyn_batch_poses)
+            except Exception as e:
+                logger.warning(f"[PILLAR] dynamic move_pillars_batch failed env={self._env_id}: {e}")
+
+        # Stop any velocity left over from the previous episode / push each
+        # active pillar's freshly-sampled initial heading. Must happen after
+        # the teleport above (else stale velocity immediately undoes the
+        # reposition); the initial heading only needs sending once here --
+        # _step_dynamic_pillars only re-sends on a later heading change, not
+        # every step.
+        for pose in dyn_batch_poses:
+            name = pose["name"]
+            state = self._dynamic_pillars.get(name)
+            try:
+                if state is not None:
+                    vec = state["speed"] * np.array(
+                        [math.cos(state["heading"]), math.sin(state["heading"])], dtype=np.float32
+                    )
+                    self._spawner.set_pillar_velocity(name, float(vec[0]), float(vec[1]))
+                else:
+                    self._spawner.set_pillar_velocity(name, 0.0, 0.0)
+            except Exception as e:
+                logger.warning(f"[PILLAR] dynamic set_velocity failed env={self._env_id} name={name}: {e}")
+
+        return remaining, dyn_named_metadata
+
+    def _park_dynamic_pool(self) -> None:
+        """Called instead of _setup_dynamic_pillars when this episode has no
+        pillars at all (_actual_num_pillars == 0) -- without this, a
+        previously-active dynamic pillar would keep coasting under its last
+        velocity command forever, invisible to collision/reward (which read
+        last_pillar_metadata, cleared to [] in that branch)."""
+        self._dynamic_pillars = {}
+        if not self._dynamic_pool_initialized:
+            return
+        p = self._p
+        for name in self._dynamic_pool_names:
+            try:
+                self._spawner.set_pillar_velocity(name, 0.0, 0.0)
+            except Exception:
+                pass
+        park_poses = [{
+            "name": name,
+            "x": float(p.pillar_pool_parking_x + i),
+            "y": float(p.pillar_pool_parking_y),
+            "z": float(0.5 * p.pillar_pool_height),
+            "yaw": 0.0,
+            "height": float(p.pillar_pool_height),
+        } for i, name in enumerate(self._dynamic_pool_names)]
+        try:
+            self._spawner.move_pillars_batch(park_poses)
+        except Exception as e:
+            logger.warning(f"[PILLAR] park_dynamic_pool failed env={self._env_id}: {e}")
+
+    def _step_dynamic_pillars(self, dt: float) -> None:
+        """Dead-reckons each dynamic pillar's position every step for
+        collision/reward bookkeeping (matches Gazebo's own VelocityControl
+        integration to within ~0.5%, verified empirically) but only pushes a
+        NEW velocity command to Gazebo when the heading actually changes
+        (periodic re-heading or zone-boundary bounce) -- physics keeps
+        applying the last commanded velocity on its own in between, so this
+        is one (non-blocking, cached-publisher) Gazebo call per re-heading
+        interval instead of a blocking set_pose call every RL step."""
+        if not self._dynamic_pillars:
+            return
+        p = self._p
+        name_to_meta = {m["name"]: m for m in self.last_pillar_metadata}
+
+        for name, state in self._dynamic_pillars.items():
+            meta = name_to_meta.get(name)
+            if meta is None:
+                continue
+
+            heading_changed = False
+            state["t_until_change"] -= dt
+            if state["t_until_change"] <= 0.0:
+                state["heading"] = float(np.random.uniform(0.0, 2.0 * math.pi))
+                state["speed"] = float(np.random.uniform(p.dynamic_pillar_speed_min, p.dynamic_pillar_speed_max))
+                state["t_until_change"] = float(np.random.uniform(0.5, p.dynamic_pillar_dir_change_interval_s))
+                heading_changed = True
+
+            cur_xy = np.array([meta["x"], meta["y"]], dtype=np.float32)
+            heading_vec = np.array([math.cos(state["heading"]), math.sin(state["heading"])], dtype=np.float32)
+            new_xy = cur_xy + state["speed"] * heading_vec * dt
+
+            offset = new_xy - state["origin"]
+            if float(np.linalg.norm(offset)) > p.dynamic_pillar_move_radius:
+                state["heading"] = float(
+                    math.atan2(-offset[1], -offset[0]) + np.random.uniform(-0.5, 0.5)
+                )
+                heading_vec = np.array([math.cos(state["heading"]), math.sin(state["heading"])], dtype=np.float32)
+                new_xy = cur_xy + state["speed"] * heading_vec * dt
+                heading_changed = True
+
+            meta["x"] = float(new_xy[0])
+            meta["y"] = float(new_xy[1])
+
+            pass_state = self.pillar_pass_states.get(name)
+            if pass_state is not None:
+                pass_state["pillar_xy"] = new_xy.copy()
+
+            if heading_changed:
+                vec = state["speed"] * heading_vec
+                try:
+                    self._spawner.set_pillar_velocity(name, float(vec[0]), float(vec[1]))
+                except Exception as e:
+                    logger.warning(f"[PILLAR] dynamic set_velocity failed env={self._env_id} name={name}: {e}")
 
     def update(
         self,
@@ -193,6 +403,8 @@ class PillarManager:
         p = self._p
         r = self._r
 
+        self._step_dynamic_pillars(self._e.dt)
+
         # Reset per-step accumulators
         nearest_dist: float = float("inf")
         nearest_xy: Optional[np.ndarray] = None
@@ -204,16 +416,31 @@ class PillarManager:
 
         pos_xy = np.asarray(pos[:2], dtype=np.float32)
 
-        # Corridor direction for pass-detection t-param
+        # Corridor direction -- only pillar_t (below, used by post-pillar
+        # behavior's "most recently passed" ordering, not pass-detection
+        # itself anymore, see the enter/exit circle redesign below) still
+        # needs this.
         start_xy = self._episode_start_xy
         goal_xy = self._episode_goal_xy
         corridor_vec = goal_xy - start_xy
         corridor_norm = float(np.linalg.norm(corridor_vec)) + 1e-8
         corridor_dir = corridor_vec / corridor_norm
-        pos_t = float(np.dot(pos_xy - start_xy, corridor_dir))
 
-        # Goal distance (needed for pass detection)
-        dist_xy = float(np.linalg.norm(goal_xy - pos_xy))
+        # Pillar pass detection -- enter/exit an engagement circle around
+        # each pillar (radius = pillar_r + drone_trigger_radius +
+        # engage_thresh, i.e. clearance_body < engage_thresh). Replaces the
+        # old corridor-t-projection scheme entirely (pos_t crossing +
+        # post_pillar_pass_margin + last_near_t recency + entry_goal_dist
+        # goal-progress gate) -- that scheme assumed the spawn followed a
+        # single straight corridor axis, a poor fit now that spawn is
+        # pure-random (see pure-random rejection-sampling redesign) and a
+        # pillar can be approached/passed from any angle, on either side.
+        # No goal-progress or near-miss exclusion gate: a pillar can only
+        # ever pay its rm_subgoal_bonus once (state["rewarded"] latches),
+        # so wobbling in/out for free credit isn't possible, and
+        # rm_subgoal_bonus (8.0) is too small next to terminal/pbrs
+        # (~150-200) to be worth farming even across many pillars.
+        pillars_passed_count: int = 0
 
         for m in self.last_pillar_metadata:
             name = str(m.get("name", ""))
@@ -232,10 +459,9 @@ class PillarManager:
                 self.pillar_pass_states[name] = {
                     "entered": False,
                     "rewarded": False,
-                    "entry_goal_dist": None,
-                    "min_dist": float("inf"),
                     "min_clearance_body": float("inf"),
                     "pillar_t": float(np.dot(pillar_xy - start_xy, corridor_dir)),
+                    "pillar_xy": pillar_xy.copy(),
                     "pass_step": None,
                     "post_pass_steps": 0,
                     "goal_realign_reward_steps": 0,
@@ -252,16 +478,36 @@ class PillarManager:
 
             state = self.pillar_pass_states[name]
 
-            # Track min dist / min body clearance (for tight-pass bonus)
-            state["min_dist"] = min(float(state["min_dist"]), dist_to_pillar)
+            # Track min body clearance (for tight-pass bonus)
             clearance_body_this = dist_to_pillar - p.drone_trigger_radius - pillar_r
             state["min_clearance_body"] = min(float(state["min_clearance_body"]), clearance_body_this)
 
-            # Mark entered when drone enters bypass enter radius
-            if (not state["entered"]) and dist_to_pillar < p.bypass_enter_radius:
-                state["entered"] = True
-                state["entry_goal_dist"] = float(dist_xy)
-                self.entered_pillar_zone_count += 1
+            # Engagement-circle gate -- CLEARANCE-based (body-surface
+            # distance), not raw center-to-center distance. bypass_enter_radius
+            # was originally compared directly against dist_to_pillar, which
+            # silently scales the wrong way with pillar_r: a bigger pillar
+            # (up to radius_range_max=0.4) needs the drone to fly much closer
+            # to its CENTER to register the same actual clearance as a small
+            # one, so a clean, reward-shaping-encouraged dodge (clearance_body
+            # in the 0.5-1.5m "not too close, not too wide" band) could sail
+            # right past a big pillar without ever satisfying dist_to_pillar <
+            # bypass_enter_radius -- confirmed live (user report: visually
+            # dodges many pillars, pillars_passed stays ~1/15). Subtracting
+            # drone_trigger_radius here (not pillar_r, already baked into
+            # clearance_body_this) keeps bypass_enter_radius's nominal
+            # magnitude/meaning intact while fixing the scaling bug.
+            engage_thresh = p.bypass_enter_radius - p.drone_trigger_radius
+            if clearance_body_this < engage_thresh:
+                if not state["entered"]:
+                    state["entered"] = True
+                    self.entered_pillar_zone_count += 1
+            elif state["entered"] and not state.get("rewarded", False):
+                # Was inside the circle, now outside it -> pass complete,
+                # regardless of which side the drone went around.
+                state["rewarded"] = True
+                state["pass_step"] = int(step_count)
+                self.avoided_pillar_count += 1
+                pillars_passed_count += 1
 
             # Track nearest
             if dist_to_pillar < nearest_dist:
@@ -280,25 +526,6 @@ class PillarManager:
             clearance_body = nearest_dist - p.drone_trigger_radius - nearest_pillar_r
         else:
             clearance_body = float("inf")
-
-        # Pillar pass detection
-        pillars_passed_count: int = 0
-        for pname, state in self.pillar_pass_states.items():
-            if not state["entered"] or state.get("rewarded", False):
-                continue
-            if float(state["min_dist"]) <= p.pillar_collision_margin:
-                continue
-            entry_goal_dist = state.get("entry_goal_dist")
-            if entry_goal_dist is None or dist_xy >= float(entry_goal_dist):
-                continue
-            if pos_t <= float(state.get("pillar_t", 0.0)) + p.post_pillar_pass_margin:
-                continue
-            pillars_passed_count += 1
-            state["rewarded"] = True
-            state["pass_step"] = int(step_count)
-            self.avoided_pillar_count += 1
-            if pname in self._active_corridor_pillar_names:
-                self._corridor_avoided_count += 1
 
         clearance_improved = (
             self.prev_nearest_dist is not None
@@ -434,6 +661,7 @@ class PillarManager:
         # Base config (matches old _pillar_spawn_config)
         corridor_half_width = p.corridor_half_width
         min_pillar_dist = p.min_dist
+        max_pillar_dist = p.max_dist
         fallback_used = False
         accepted_partial_spawn = False
         actual_count = 0
@@ -441,20 +669,28 @@ class PillarManager:
 
         min_required_pillars = max(1, self._actual_num_pillars - 2)
 
+        # Grid capacity ~ area / spacing^2, so unlike the old slalom-chain
+        # (bottlenecked by longitudinal segment count, unaffected by width),
+        # both levers genuinely help here: attempt 2 packs the grid denser,
+        # attempt 3 also widens the band to grow capacity further.
         for attempt in range(1, 4):
             attempt_corridor = corridor_half_width
             attempt_min_dist = min_pillar_dist
+            attempt_max_dist = max_pillar_dist
             if attempt == 2:
-                attempt_min_dist = 2.0
+                attempt_min_dist = max(0.8, min_pillar_dist * 0.85)
+                attempt_max_dist = max(attempt_min_dist, max_pillar_dist * 0.85)
                 fallback_used = True
             elif attempt == 3:
-                attempt_corridor = 3.2
-                attempt_min_dist = 1.6
+                attempt_corridor = corridor_half_width * 1.4
+                attempt_min_dist = max(0.7, min_pillar_dist * 0.7)
+                attempt_max_dist = max(attempt_min_dist, max_pillar_dist * 0.7)
                 fallback_used = True
 
             try:
                 metadata = self._spawner.sample_random_field_metadata(
-                    num_pillars=self._actual_num_pillars,
+                    num_main=self._actual_main_pillars,
+                    num_decor=self._actual_decor_pillars,
                     start=start,
                     goal=goal,
                     name_prefix=prefix,
@@ -467,14 +703,17 @@ class PillarManager:
                     pillar_radius_range=p.radius_range,
                     pillar_height_range=p.height_range,
                     min_dist=attempt_min_dist,
+                    max_dist=attempt_max_dist,
                     corridor_jitter_deg=p.corridor_jitter_deg,
+                    decor_lateral_max=p.decor_lateral_max,
+                    decor_fill_prob=p.decor_fill_prob,
                 )
             except Exception:
                 metadata = []
 
             actual_count = len(metadata)
             if actual_count >= min_required_pillars:
-                accepted_partial_spawn = actual_count < p.num_pillars
+                accepted_partial_spawn = actual_count < self._actual_num_pillars
                 return {
                     "ok": True,
                     "metadata": metadata,
@@ -502,8 +741,6 @@ class PillarManager:
         self._bypass_group_reached = []
         self._bypass_group_near_rewarded = []
         self._bypass_group_idx = 0
-        self._active_corridor_pillar_names = set()
-        self._active_corridor_pillar_count = 0
 
         p = self._p
         r = self._r
@@ -524,6 +761,7 @@ class PillarManager:
         for m in metadata:
             pillar_xy = np.array([m["x"], m["y"]], dtype=np.float32)
             pillar_r = float(m.get("radius", p.pillar_pool_radius))
+            is_blocking = bool(m.get("blocking", False))
 
             t = float(np.dot(pillar_xy - start_xy, corridor_dir))
             if t <= 2.0 or t >= corridor_len - 2.0:
@@ -531,15 +769,12 @@ class PillarManager:
 
             cross = float(np.dot(pillar_xy - start_xy, lateral_dir))
 
-            # Active corridor pillar: within bypass_enter_radius of true corridor axis.
-            # Drone flying straight will enter this pillar's zone → meaningful for DFA.
-            if abs(cross) <= p.bypass_enter_radius:
-                name = str(m.get("name", ""))
-                if name:
-                    self._active_corridor_pillar_names.add(name)
-                    self._active_corridor_pillar_count += 1
-
-            if abs(cross) > 3.5:
+            # Bypass-subgoal candidate generation: skip pillars too far off
+            # the line to bother (decor). Blocking pillars always proceed
+            # regardless of distance -- a wide wall/triangle member still
+            # needs its own bypass points, this cutoff is only meant to
+            # limit useless candidates for decor.
+            if not is_blocking and abs(cross) > 3.5:
                 continue
 
             side_candidates: list[dict] = []

@@ -19,6 +19,16 @@ class EnvConfig:
     symbolic_num_gates: int = 4            # goal, vertical, dodge, face (positional order) — must match SAGEPipeline's primitives list, 1:1 (no extra +1, p_boost removed)
     sage_face_gate_min: float = 0.2        # p_face floor — see PrimitivesConfig.face_gate_min
     cbf_enabled: bool = False              # symbolic mode only — gates CBFShield's real QP vs identity passthrough
+    # CBFShield is minimal-intervention by design (QP finds the SMALLEST
+    # correction satisfying grad_h.u >= -cbf_alpha*h, h = EDT(x)-margin) --
+    # not "actively flee the obstacle". Correction only grows once h goes
+    # negative (drone already inside the margin), scaled by cbf_alpha. Raise
+    # cbf_safety_margin to trigger the constraint farther out, cbf_alpha to
+    # make the response steeper once triggered -- both were previously
+    # hardcoded (0.5m / 2.0) in train_manager._build_sage_pipeline with no
+    # way to tune via config.
+    cbf_safety_margin: float = 0.5         # metres, h(x) = EDT(x) - this
+    cbf_alpha: float = 2.0                 # class-K linear gain
     # Symbolic-only reset curriculum: randomize post-reset altitude (scripted vz
     # climb/descend, not teleport) so VerticalPrimitive's descend branch (z >
     # alt_optimal_high) gets exercised too -- the shared _pre_episode_climb_if_low
@@ -83,7 +93,7 @@ class EnvConfig:
     goal_dist_low_end: float = 16.0
     goal_dist_high_start: float = 13.0
     goal_dist_high_end: float = 16.0
-    goal_dist_ramp_steps: int = 350_000
+    goal_dist_ramp_steps: int = 180_000
     goal_dist_ramp_min_band: float = 2.0   # minimum annulus width during ramp phase
 
     # Fence boundaries
@@ -95,11 +105,11 @@ class EnvConfig:
     fence_z_max: float = 8.0
 
     # Velocity limits (applied by ActionManager)
-    vx_limit: float = 2.2
-    vy_limit: float = 1.8
-    vz_up_limit: float = 1.2
+    vx_limit: float = 3.0
+    vy_limit: float = 2.5
+    vz_up_limit: float = 1.6
     vz_down_limit: float = 0.6
-    yaw_rate_limit: float = 0.6
+    yaw_rate_limit: float = 1.35
     action_smoothing: float = 0.35
     freeze_vz: bool = False  # Stage 0: soft-band vz constraint
     freeze_vz_band_low: float = 2.5  # if z < this AND vz_cmd < 0 → override climb
@@ -155,9 +165,22 @@ class EnvConfig:
     pre_episode_auto_yaw_timeout_s: float = 4.0
     pre_episode_auto_yaw_tol_deg: float = 8.0
     pre_episode_auto_yaw_gain: float = 1.2
-    yaw_curriculum_steps: int = 0   # steps over which yaw assist fades 0→π; 0=binary on/off
-    # Manual carryover for the _YAW_SCHEDULE assist-ratio lookup (train_manager.py
-    # reset()) so the ramp-down doesn't reset to 100% assist at a stage boundary.
+    # Fraction of this stage's min_steps over which yaw-assist min_assist ramps
+    # 1.0->0.0, scaling the fixed relative schedule in train_manager.py's
+    # reset() (_YAW_SCHEDULE_FRACS). Expressed as a fraction (not a raw step
+    # count) so the ramp duration auto-scales if min_steps is changed later --
+    # e.g. 0.375 always means "ramp over the first 37.5% of this stage",
+    # regardless of what min_steps is set to. Can exceed 1.0 (ramp intentionally
+    # outlives this stage, finishing via yaw_curriculum_carryover_steps in the
+    # next one -- see stage0/stage1 in ppo_config.yaml). <=0 = binary on/off
+    # (full assist, no fade). Set per-stage in ppo_config.yaml.
+    yaw_curriculum_frac: float = 0.0
+    # This stage's curriculum step budget (mirrors ppo_config.yaml curriculum
+    # entry's min_steps) -- forwarded here only so yaw_curriculum_frac above
+    # has something to scale against at runtime.
+    min_steps: int = 0
+    # Manual carryover for the _YAW_SCHEDULE_FRACS assist-ratio lookup
+    # (train_manager.py reset()) so the ramp-down doesn't reset to 100% assist at a stage boundary.
     # _stage_start_step is per-stage (stage{N}_start_step.json), so
     # _steps_in_stage alone would jump back to 0 the instant a later stage also
     # enables pre_episode_auto_yaw_enabled. Set this in a later stage's yaml

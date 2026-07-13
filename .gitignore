@@ -24,6 +24,7 @@ install/
 Thumbs.db
 
 CLAUDE.md
+DAILY_WORKFLOW.md
 
 
 plans/
@@ -52,4 +53,8 @@ runs/**/*.txt
 discord_notify.py
 ./codegraph
 /phifilter
+/data
+/real_time_test
+collect_transient_identification.launch.py
+scenarios_transient_train.yaml
 

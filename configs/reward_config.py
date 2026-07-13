@@ -139,7 +139,7 @@ class RewardConfig:
     # with zero visible learning pressure. Paired with the one-shot
     # stage1_goal_yaw_* arrival bonus/penalty now wired into
     # _reward_terminal (see reward_manager.py) for a second, cleaner signal.
-    stage1_face_goal_coef: float = 0.15
+    stage1_face_goal_coef: float = 0.20
     stage1_backwards_yaw_penalty_coef: float = 0.05
     stage1_backwards_yaw_speed_gate: float = 0.5   # min speed (m/s) to trigger (0.5)
 
@@ -156,17 +156,16 @@ class RewardConfig:
     #   cos=0.000 (90°)    → -0.6 * 0.935/1.935 = -0.29 penalty
     #   cos=-1.0 (180°)    → -0.6 penalty (max) -- goal directly behind, the
     #                        case that most needs p_face to turn fast
-    stage1_yaw_good_thresh: float = 0.935      # cos threshold ≈ 20.8° (arccos(0.935), was 0.92≈23° -- tightened), above = bonus, below = penalty -- fallback when ramp is off (schedule list empty); overridden by _update_yaw_good_thresh() when stage1_yaw_good_thresh_schedule_* below is set
-    stage1_yaw_forward_bonus_coef: float = 0.10   # max bonus at perfect alignment (cos=1.0)
+    stage1_yaw_good_thresh: float = 0.982      # cos threshold ≈ 11deg -- flat, ramp disabled below
+    stage1_yaw_forward_bonus_coef: float = 0.15   # max bonus at perfect alignment (cos=1.0)
     stage1_yaw_forward_penalty_coef: float = 0.6   # max penalty at full misalignment (cos=-1.0), was 0.35 -- raised alongside face_goal_coef
-    # Ramp good_thresh tighter over training (same piecewise-linear style as
-    # EnvConfig.goal_xy_radius_schedule): loosest at step 0 so bonus fires
-    # often while p_face is untrained, tightening to 0.982 (~11 deg) by 300k
-    # steps once the policy should already be hitting the looser bar
-    # reliably. Empty list = ramp disabled, stage1_yaw_good_thresh above used
-    # as a flat value instead (train_manager.py's _update_yaw_good_thresh()).
-    stage1_yaw_good_thresh_schedule_values: list = field(default_factory=lambda: [0.935, 0.982])
-    stage1_yaw_good_thresh_schedule_steps: list = field(default_factory=lambda: [0, 300_000])
+    # Ramp disabled: _update_yaw_good_thresh() keys off (global_step - stage_start_step),
+    # which resets to 0 at every stage transition -- each new stage re-loosened the
+    # threshold back to schedule_values[0] even though the policy had already earned
+    # the tighter bar in the previous stage. Empty lists = flat stage1_yaw_good_thresh
+    # above used for all steps (train_manager.py's _update_yaw_good_thresh()).
+    stage1_yaw_good_thresh_schedule_values: list = field(default_factory=lambda: [])
+    stage1_yaw_good_thresh_schedule_steps: list = field(default_factory=lambda: [])
 
     # Stage2+ (with pillars): looser thresh=0.9275 ≈ yaw_error < 21.9° for bonus
     #   cos=1.00 (0°)   → +0.20 * 1.0 = +0.20 bonus
@@ -181,7 +180,7 @@ class RewardConfig:
     stage2_backwards_yaw_dot_thresh: float = -0.20
     stage2_backwards_yaw_speed_to_goal_thresh: float = 0.35
     stage2_backwards_yaw_horizontal_speed_thresh: float = 0.50
-    yaw_rate_penalty_coef: float = -0.475  # r = coef * |yaw_rate|, e.g. 0.5 rad/s → -0.088/step
+    yaw_rate_penalty_coef: float = -0.3  # r = coef * |yaw_rate|, e.g. 0.5 rad/s → -0.15/step
 
     # ------------------------------------------------------------------ #
     # Goal yaw terminal bonus — at goal arrival                           #
@@ -208,7 +207,7 @@ class RewardConfig:
     stage1_lateral_coef: float = 0.03
     stage1_fence_thresh: float = 2.5
     stage1_fence_coef: float = 0.25
-    stage2_lateral_thresh: float = 2.0
+    stage2_lateral_thresh: float = 1.2
     stage2_lateral_coef: float = 0.08
     stage2_fence_thresh: float = 3.0
     stage2_fence_coef: float = 0.60
@@ -243,11 +242,25 @@ class RewardConfig:
     pillar_zone_radius: float = 1.85  # "near a pillar" gate for the clearance shaping below
 
     # ------------------------------------------------------------------ #
-    # Bypass subgoals — geometry kept, rewards REPLACED BY DFA+RM        #
+    # Bypass subgoals — geometry kept, rewards REMOVED (both zeroed)      #
     # ------------------------------------------------------------------ #
+    # near_reward zeroed (was 3.0): pulled the drone toward a FIXED
+    # geometric offset point, independent of DodgePrimitive's own dynamic
+    # EDT-gradient tangent choice -- the two could disagree on which side to
+    # pass, fighting the primitive's (correct, live-clearance-aware) pick
+    # with a static spatial reward. Pillar-pass credit already requires
+    # actually going around the pillar (PillarManager's pass-detection,
+    # gates on crossing the pillar's t-range on either side) and pays via
+    # rm_subgoal_bonus -- that alone is sufficient "must bypass, not
+    # traverse" pressure, no separate spatial pull needed.
     stage2_pillar_bypass_offset_m: float = 2.4
-    stage2_pillar_bypass_near_radius: float = 1.2   # still used as DFA trigger radius
-    stage2_pillar_bypass_near_reward: float = 3.0       # spatial pull toward safe bypass path
+    # NOT a DFA trigger -- dfa_q/dfa_N source unconditionally from
+    # PillarManager._stage1_idx (the straight-line waypoint chain), same
+    # code path regardless of num_pillars. This radius only advances
+    # _bypass_group_idx, which feeds _last_bypass_info["active_subgoal"]
+    # for logging/debug -- reward-free bookkeeping now that near_reward=0.
+    stage2_pillar_bypass_near_radius: float = 1.2
+    stage2_pillar_bypass_near_reward: float = 0.0       # REMOVED (was 3.0) -- see note above
     stage2_pillar_bypass_reach_reward: float = 0.0     # covered by rm_subgoal_bonus at pillar pass
 
     # ------------------------------------------------------------------ #
@@ -356,5 +369,16 @@ class RewardConfig:
     # cost for that choice -- otherwise CBF silently bails it out and the
     # dodge gate's marginal effect on outcome (and thus its gradient signal)
     # vanishes exactly at the states where learning to avoid matters most.
-    # 0.0 = opt-in default, no behavior change until empirically tuned.
-    cbf_intervention_coef: float = 0.0
+    # Raised 0.35->1.0 (2.9x): at 0.35, clean episodes with light/rare CBF correction
+    # (e.g. correction_sum=1.17 over 4/75 steps) produced cbf_penalty~0.41 against a
+    # ~240 total episode reward dominated by terminal/pbrs/rm -- signal too small for
+    # PPO to pick up a gradient from. 1.0 matches pillar_clearance_close_coef's
+    # magnitude; risk is now double-penalizing the same risky-proximity behavior
+    # pillar_too_close already covers -- watch for over-conservative flight (drone
+    # giving obstacles unnecessarily wide berth) and back off if that shows up in
+    # ep_len_mean/success_rate trends.
+    # POSITIVE here -- reward_manager.py's `-cbf_intervention_coef * correction_norm`
+    # already negates it into a penalty; a negative value here double-negates into an
+    # (incorrect) reward. Confirmed via training log: coef=-0.35 produced cbf_penalty=+0.41
+    # (rewarding correction) instead of a penalty.
+    cbf_intervention_coef: float = 1.0 

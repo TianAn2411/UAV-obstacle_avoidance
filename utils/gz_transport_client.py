@@ -33,9 +33,19 @@ except Exception:
     GzWind = None
 
 try:
+    from gz.msgs10.entity_wrench_pb2 import EntityWrench as GzEntityWrench
+except Exception:
+    GzEntityWrench = None
+
+try:
     from gz.msgs10.marker_pb2 import Marker as GzMarker
 except Exception:
     GzMarker = None
+
+try:
+    from gz.msgs10.twist_pb2 import Twist as GzTwist
+except Exception:
+    GzTwist = None
 
 
 @contextlib.contextmanager
@@ -77,6 +87,13 @@ class GzTransportClient:
         self.use_lock = bool(use_lock)
         self.logger = logger or logging.getLogger(__name__)
         self.node = None
+        self._pub_cache: dict = {}  # topic -> Publisher, reused across calls so
+        # gz-transport's pub/sub discovery (~hundreds of ms) only has to
+        # complete once per topic instead of racing advertise-then-immediately
+        # -publish on every call (a fresh Publisher that's dropped right after
+        # one send can lose that first message if no subscriber connection has
+        # been established yet -- this is why set_wind() looked like it worked
+        # (publish() returned True) but produced zero physical force).
 
         if gz_transport is not None:
             try:
@@ -84,6 +101,16 @@ class GzTransportClient:
             except Exception as exc:
                 self.logger.warning(f"[GZ TRANSPORT] node init failed: {exc}")
                 self.node = None
+
+    def _get_publisher(self, topic: str, msg_type):
+        """Cached advertise() -- see _pub_cache comment in __init__."""
+        key = (self.gz_partition, topic)
+        pub = self._pub_cache.get(key)
+        if pub is None:
+            with gz_partition_env(self.gz_partition):
+                pub = self.node.advertise(topic, msg_type)
+            self._pub_cache[key] = pub
+        return pub
 
     def available(self) -> bool:
         return self.node is not None
@@ -373,38 +400,106 @@ class GzTransportClient:
             self.logger.debug(f"[GZ MARKER] clear failed: {exc}")
             return False
 
-    def set_wind(self, world_name: str, wx: float, wy: float, wz: float = 0.0) -> bool:
-        """Publish horizontal wind velocity (ENU m/s) to Gazebo WindEffects plugin."""
+    # Wind speed (m/s) -> horizontal drag force (N) approximation, applied
+    # directly via ApplyLinkWrench. Replaces the gz-sim WindEffects/<wind>
+    # topic route: that path was verified (plugin loads, enable_wind set,
+    # message has enable_wind=true, topic/type match the compiled plugin)
+    # but produced zero measurable force on the vehicle even at 100 m/s in
+    # both the full PX4 hover test and a disarmed physics-only free-fall
+    # probe -- ApplyLinkWrench is the same system already loaded in
+    # default.sdf and applies force directly to a named link, no WindMode/
+    # enable_wind component or internal noise-model plumbing involved.
+    # wind_speed_max caps at 1.0 m/s across all curriculum stages, so worst
+    # case F=1.25*1.0=1.25N -> ~2.7deg measured steady tilt (0.74x the
+    # small-angle atan(F/W) estimate, per the wind=1.0,scale=2.0 test run).
+    # Deliberately exaggerated vs real aerodynamic drag (~0.05 N/(m/s) for a
+    # 500-class quad) for domain-randomization robustness margin, not
+    # physical realism -- the RL policy is the outer velocity/attitude-
+    # setpoint loop, real hardware's own inner-loop disturbance rejection
+    # handles high-frequency wind directly. Destabilization only showed up
+    # during testing at wind=5.0 (now impossible -- capped at 1.0), where
+    # F=10N -> ~27deg required tilt exceeded control authority.
+    _WIND_FORCE_N_PER_MPS = 1.25
+
+    def set_wind(
+        self, world_name: str, wx: float, wy: float, wz: float = 0.0,
+        entity_name: str = "", entity_type: int | None = None,
+    ) -> bool:
+        """Apply a horizontal wind-drag force (ENU m/s -> N) to entity_name via
+        the ApplyLinkWrench system's persistent-wrench topic. Persists across
+        physics steps until the next call overwrites it (e.g. wx=wy=wz=0).
+
+        entity_name/entity_type default to targeting the MODEL (not a bare
+        link name) -- matches px4_lut_fft_levinson_welch_ga's
+        collect_transient_identification.launch.py, a working reference for
+        this exact plugin/topic (/world/<w>/wrench, entity_name="x500_0",
+        type=MODEL). ApplyLinkWrench resolves a MODEL reference to its
+        canonical link (base_link, the first link in x500_base/model.sdf)
+        internally -- addressing by model name avoids relying on "base_link"
+        being unambiguous across every model in the world.
+        """
         if not self.available():
             return False
 
-        if GzWind is not None:
+        ent_type = entity_type if entity_type is not None else Entity.MODEL
+
+        if GzEntityWrench is not None:
             try:
-                topic = f"/world/{world_name}/wind"
+                topic = f"/world/{world_name}/wrench/persistent"
+                pub = self._get_publisher(topic, GzEntityWrench)
+                msg = GzEntityWrench()
+                msg.entity.name = str(entity_name)
+                msg.entity.type = ent_type
+                msg.wrench.force.x = float(wx) * self._WIND_FORCE_N_PER_MPS
+                msg.wrench.force.y = float(wy) * self._WIND_FORCE_N_PER_MPS
+                msg.wrench.force.z = float(wz) * self._WIND_FORCE_N_PER_MPS
                 with gz_partition_env(self.gz_partition):
-                    pub = self.node.advertise(topic, GzWind)
-                    msg = GzWind()
-                    msg.linear_velocity.x = float(wx)
-                    msg.linear_velocity.y = float(wy)
-                    msg.linear_velocity.z = float(wz)
                     ok = pub.publish(msg)
                 return bool(ok)
             except Exception as exc:
-                self.logger.debug(f"[GZ WIND] gz.msgs Wind publish failed: {exc}")
+                self.logger.debug(f"[GZ WIND] EntityWrench publish failed: {exc}")
 
         # Fallback: subprocess gz topic publish
         try:
             import subprocess
-            payload = f"linear_velocity: {{x: {wx:.4f}, y: {wy:.4f}, z: {wz:.4f}}}"
+            fx = float(wx) * self._WIND_FORCE_N_PER_MPS
+            fy = float(wy) * self._WIND_FORCE_N_PER_MPS
+            fz = float(wz) * self._WIND_FORCE_N_PER_MPS
+            type_name = "MODEL" if ent_type == Entity.MODEL else "LINK"
+            payload = (
+                f'entity: {{name: "{entity_name}", type: {type_name}}}, '
+                f"wrench: {{force: {{x: {fx:.4f}, y: {fy:.4f}, z: {fz:.4f}}}}}"
+            )
             env = dict(__import__("os").environ)
             if self.gz_partition:
                 env["GZ_PARTITION"] = str(self.gz_partition)
             result = subprocess.run(
-                ["gz", "topic", "-t", f"/world/{world_name}/wind",
-                 "-m", "gz.msgs.Wind", "-p", payload],
+                ["gz", "topic", "-t", f"/world/{world_name}/wrench/persistent",
+                 "-m", "gz.msgs.EntityWrench", "-p", payload],
                 timeout=1.0, capture_output=True, env=env,
             )
             return result.returncode == 0
         except Exception as exc:
             self.logger.debug(f"[GZ WIND] subprocess fallback failed: {exc}")
+            return False
+
+    def set_model_velocity(self, model_name: str, vx: float, vy: float, vz: float = 0.0) -> bool:
+        """Publish linear velocity to /model/<model_name>/cmd_vel -- the
+        VelocityControl system plugin (attached in make_dynamic_pillar_sdf)
+        applies it every physics tick until this is called again, so a
+        dynamic pillar only needs one call per heading change, not one per
+        RL step like the static/teleport pillars."""
+        if not self.available() or GzTwist is None:
+            return False
+        try:
+            topic = f"/model/{model_name}/cmd_vel"
+            pub = self._get_publisher(topic, GzTwist)
+            msg = GzTwist()
+            msg.linear.x = float(vx)
+            msg.linear.y = float(vy)
+            msg.linear.z = float(vz)
+            with gz_partition_env(self.gz_partition):
+                return bool(pub.publish(msg))
+        except Exception as exc:
+            self.logger.debug(f"[GZ VEL] set_model_velocity failed name={model_name}: {exc}")
             return False

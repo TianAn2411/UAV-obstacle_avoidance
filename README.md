@@ -26,7 +26,7 @@ cd ~/PX4-Autopilot
 git clone --recursive git@github.com:TianAn2411/UAV-obstacle_avoidance.git obstacle_avoidance
 ```
 
-Already cloned without `--recursive`? Pull the `symbolic_extractor` submodule separately:
+Already cloned without `--recursive`? Pull the `symbolic_extractor`/`symbolic_action` submodules separately:
 
 ```bash
 cd ~/PX4-Autopilot/obstacle_avoidance
@@ -219,12 +219,18 @@ obstacle_avoidance/
     process_utils.py        # Gazebo/PX4/MicroXRCE process launchers
     px4_manager.py          # Per-rank PX4 SITL instance manager
     gz_transport_client.py  # Native Gazebo Transport client
-  symbolic_extractor/       # Symbolic feature extraction pipeline (submodule)
+  symbolic_extractor/       # HALO — perception pipeline (submodule)
+  symbolic_action/          # SAGE — gated control pipeline (submodule)
 ```
 
-### symbolic_extractor
+### HALO & SAGE
 
-`symbolic_extractor/` is a submodule implementing a proprietary symbolic perception pipeline that converts raw sensor data into structured feature representations for the RL policy. Interface: see `symbolic_extractor/pipeline.py`.
+Two proprietary submodules, each with its own repo and README:
+
+- **`symbolic_extractor/` (HALO)** — perception pipeline, converts raw sensor data into a structured world-frame feature representation for the RL policy. Interface: `symbolic_extractor/pipeline.py`.
+- **`symbolic_action/` (SAGE)** — gated-primitive control pipeline sitting between the policy and the drone, with a hard safety filter on its output. Interface: `symbolic_action/pipeline.py`.
+
+Design/architecture details are intentionally kept out of this public README — see each submodule's own README for collaborators with repo access.
 
 ### Data flow
 
@@ -252,7 +258,7 @@ PPO.learn()
 
 | Key | Shape | Description |
 |---|---|---|
-| `depth` | `(3, 84, 84)` float32 | 3 stacked depth frames, clipped to [0, 10] m |
+| `depth` | `(3, 84, 84)` float32 | Kinematic Tensor - output of HALO  |
 | `state` | `(31,)` float32 | ego-centric state vector (see below) |
 
 State vector layout (all normalized, body-frame FLU):

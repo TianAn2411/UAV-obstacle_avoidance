@@ -45,6 +45,10 @@ _CSV_HEADER: list[str] = [
     "path_eff",
     # reward components (all fields from RewardComponents)
     *[f.name for f in fields(RewardComponents)],
+    # CBF shield diagnostics (Track B only, 0 for Track A)
+    "cbf_correction_sum",
+    "cbf_correction_avg",
+    "cbf_correction_steps",
 ]
 
 
@@ -92,6 +96,12 @@ class LoggingManager:
             f.name: 0.0 for f in fields(RewardComponents)
         }
 
+        # CBF shield diagnostics (Track B only) — raw correction magnitude,
+        # separate from cbf_intervention (= -coef * norm, 0 whenever coef=0.0)
+        # so the correction is still visible even with the penalty off.
+        self._ep_cbf_correction_sum: float = 0.0
+        self._ep_cbf_correction_steps: int = 0
+
         # ---- k-step aggregate metrics ------------------------------------
         self._kstep_interval: int = max(1, log_every_steps * 20)  # ~20 log windows
         self._kstep_last_report_block: int = -1
@@ -118,11 +128,18 @@ class LoggingManager:
         done_reason: str,
         pos: np.ndarray,
         dist_xy: float,
+        cbf_correction_norm: float = 0.0,
     ) -> None:
         """Accumulate per-step data; emit step log at every log_every_steps boundary."""
         self.global_env_step += 1
         self._ep_step_count += 1
         self._ep_reward_sum += float(reward)
+
+        # CBF raw correction magnitude (independent of cbf_intervention_coef)
+        cn = float(cbf_correction_norm)
+        self._ep_cbf_correction_sum += cn
+        if cn > 0.0:
+            self._ep_cbf_correction_steps += 1
 
         # accumulate per-component sums
         comp_dict = asdict(components)
@@ -178,6 +195,8 @@ class LoggingManager:
         self._ep_start_wall = time.time()
         for key in self._ep_component_sums:
             self._ep_component_sums[key] = 0.0
+        self._ep_cbf_correction_sum = 0.0
+        self._ep_cbf_correction_steps = 0
 
     def log_episode_start(
         self, reset_mode: str, reason: str, pos: np.ndarray, dist_xy: float
@@ -402,6 +421,17 @@ class LoggingManager:
                 f"terminal={s.get('terminal', 0.0):.2f} "
                 f"total={s.get('total', 0.0):.2f}"
             )
+            _cbf_avg = (
+                self._ep_cbf_correction_sum / self._ep_cbf_correction_steps
+                if self._ep_cbf_correction_steps > 0 else 0.0
+            )
+            self.logger.info(
+                "[EP SUMMARY][CBF] "
+                f"correction_sum={self._ep_cbf_correction_sum:.3f} "
+                f"correction_avg={_cbf_avg:.3f} "
+                f"correction_steps={self._ep_cbf_correction_steps}/{self._ep_step_count} "
+                f"intervention_penalty={s.get('cbf_intervention', 0.0):.3f}"
+            )
 
             # CSV row
             if self._csv_writer is not None:
@@ -418,6 +448,9 @@ class LoggingManager:
                 }
                 for fname in self._ep_component_sums:
                     row[fname] = round(self._ep_component_sums[fname], 4)
+                row["cbf_correction_sum"] = round(self._ep_cbf_correction_sum, 4)
+                row["cbf_correction_avg"] = round(_cbf_avg, 4)
+                row["cbf_correction_steps"] = self._ep_cbf_correction_steps
                 self._csv_writer.writerow(row)
                 if self._csv_file is not None:
                     self._csv_file.flush()

@@ -1803,10 +1803,11 @@ class ROSBridge(Node):
             self.trajectory_pub.publish(tp)
 
     def set_wind(self, wx: float, wy: float, wz: float = 0.0) -> bool:
-        """Set global wind velocity (ENU m/s) via Gazebo Transport. No-op if unavailable."""
+        """Apply wind-drag force (ENU m/s -> N) to this vehicle model via
+        ApplyLinkWrench. No-op if Gazebo Transport unavailable."""
         if self.gz_client is None or not self.gz_client.available():
             return False
-        return self.gz_client.set_wind(self.world_name, wx, wy, wz)
+        return self.gz_client.set_wind(self.world_name, wx, wy, wz, entity_name=self.model_name)
 
     # ── Debug visual markers (disc pool, spawn-once + teleport) ──────────────
 
@@ -2655,6 +2656,55 @@ class Spawner:
                 return False
         return False
 
+    def spawn_dynamic_pillar(self, name, x, y, radius=0.3, height=6.0, mass=5.0):
+        """Non-static pillar (VelocityControl-driven) -- see spawn_world.make_dynamic_pillar_sdf."""
+        if spawn_world is not None:
+            try:
+                ok = self._gz_spin_wrap(
+                    spawn_world.spawn_dynamic_pillar,
+                    name=name, x=x, y=y, radius=radius, height=height, mass=mass,
+                    world_name=self.world_name, env=self._gz_env(),
+                    max_wait_s=18.0,
+                )
+                return bool(ok) if ok is not None else False
+            except Exception as exc:
+                self.logger.warning(f"[SPAWNER DYNAMIC SPAWN FAIL] name={name} reason={exc}")
+                return False
+        return False
+
+    def set_pillar_velocity(self, name, vx, vy, vz=0.0):
+        """Uses self.gz_client (persistent, cached publisher) -- a fresh
+        GzTransportClient per call can drop the first (only) message if
+        publisher/subscriber discovery hasn't completed yet, same pitfall
+        set_wind() hit before it moved to a cached publisher."""
+        if self.gz_client is not None and self.gz_client.available():
+            try:
+                return bool(self._gz_spin_wrap(
+                    self.gz_client.set_model_velocity,
+                    name, vx, vy, vz,
+                    max_wait_s=1.5,
+                ))
+            except Exception as exc:
+                self.logger.warning(f"[SPAWNER SET VELOCITY FAIL] name={name} reason={exc}")
+                return False
+        return False
+
+    def spawn_marker(self, name, x, y, r=0.1, g=0.3, b=1.0, radius=0.6, height=0.08):
+        """Flat colored disc, no collision -- debug visual (e.g. mark active pillars)."""
+        if spawn_world is not None:
+            try:
+                ok = self._gz_spin_wrap(
+                    spawn_world.spawn_disc_marker,
+                    name=name, x=x, y=y, r=r, g=g, b=b, radius=radius,
+                    world_name=self.world_name, env=self._gz_env(),
+                    max_wait_s=18.0,
+                )
+                return bool(ok) if ok is not None else False
+            except Exception as exc:
+                self.logger.warning(f"[SPAWNER MARKER SPAWN FAIL] name={name} reason={exc}")
+                return False
+        return False
+
     def move_pillar(self, name, x, y, z):
         if spawn_world is not None:
             try:
@@ -2906,11 +2956,12 @@ class Spawner:
 
     def sample_random_field_metadata(
         self,
-        num_pillars=0,
+        num_main=0,
+        num_decor=0,
         start=None,
         goal=None,
         name_prefix="pillar",
-        corridor_half_width=2.5,
+        corridor_half_width=4.5,
         start_clearance=2.5,
         goal_clearance=2.5,
         t_min=0.25,
@@ -2918,12 +2969,16 @@ class Spawner:
         spawn_bounds=(-10.0, -9.0, 10.0, 9.0),
         pillar_radius_range=(0.2, 0.4),
         pillar_height_range=(4.0, 6.0),
-        min_dist=2.0,
+        min_dist=1.6,
+        max_dist=2.0,
         corridor_jitter_deg=0.0,
+        decor_lateral_max=None,
+        decor_fill_prob=0.35,
     ):
-        if num_pillars > 0 and spawn_world is not None:
+        if (num_main + num_decor) > 0 and spawn_world is not None:
             return spawn_world.sample_random_field_metadata(
-                num_pillars=num_pillars,
+                num_main=num_main,
+                num_decor=num_decor,
                 start=start,
                 goal=goal,
                 name_prefix=name_prefix,
@@ -2936,7 +2991,10 @@ class Spawner:
                 pillar_radius_range=pillar_radius_range,
                 pillar_height_range=pillar_height_range,
                 min_dist=min_dist,
+                max_dist=max_dist,
                 corridor_jitter_deg=corridor_jitter_deg,
+                decor_lateral_max=decor_lateral_max,
+                decor_fill_prob=decor_fill_prob,
             )
         return []
 
@@ -2946,7 +3004,7 @@ class Spawner:
         start=None,
         goal=None,
         name_prefix="pillar",
-        corridor_half_width=2.5,
+        corridor_half_width=4.5,
         start_clearance=2.5,
         goal_clearance=2.5,
         t_min=0.25,
@@ -2954,7 +3012,8 @@ class Spawner:
         spawn_bounds=(-10.0, -9.0, 10.0, 9.0),
         pillar_radius_range=(0.2, 0.4),
         pillar_height_range=(4.0, 6.0),
-        min_dist=2.0
+        min_dist=1.6,
+        max_dist=2.0,
     ):
         if num_pillars > 0 and spawn_world is not None:
             old_partition = os.environ.get("GZ_PARTITION")
@@ -2964,7 +3023,7 @@ class Spawner:
 
             try:
                 return spawn_world.spawn_random_field(
-                    num_pillars=num_pillars,
+                    num_main=num_pillars,
                     world_name=self.world_name,
                     start=start,
                     goal=goal,
@@ -2977,7 +3036,8 @@ class Spawner:
                     spawn_bounds=spawn_bounds,
                     pillar_radius_range=pillar_radius_range,
                     pillar_height_range=pillar_height_range,
-                    min_dist=min_dist
+                    min_dist=min_dist,
+                    max_dist=max_dist,
                 )
             finally:
                 if old_partition is None:

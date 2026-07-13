@@ -492,7 +492,7 @@ class ResetManager:
           0.5 = rotate halfway
           0.0 = no rotation (skip)
         Caller samples assist_ratio ~ Uniform(0, max_assist) each episode,
-        where max_assist shrinks 1→0 over yaw_curriculum_steps.
+        where max_assist shrinks 1→0 over yaw_curriculum_frac * min_steps.
         Source: old drone_env.py L3710.
         """
         if not self.ecfg.pre_episode_auto_yaw_enabled:

@@ -132,10 +132,21 @@ class RewardManager:
         c.pbrs = float(self._r.pbrs_gamma) * phi_current - self._prev_phi
         self._prev_phi = phi_current
 
-        # --- Reward Machine bonus ---
+        # --- Reward Machine bonus --- two independent additive sources:
+        # (a) waypoint dfa_q advance, gated off the goal-arrival transition --
+        # dfa_N's reserved final slot bumps dfa_q by 1 the instant goal is
+        # reached (see train_manager.py's DFA snap), which isn't a real
+        # waypoint crossing and is already fully paid by terminal
+        # (goal_xy_terminal_reward + fast_finish + yaw bonus). Without this
+        # gate, every successful episode got a free extra rm_subgoal_bonus
+        # for simply arriving.
+        # (b) pillar pass count this step (PillarManager.update(), unconditional
+        # on blocking/decor status) -- independent of dfa_q entirely, so a
+        # pillar pass and a waypoint crossing can both pay out the same step.
         rm = 0.0
-        if state.dfa_q > state.dfa_q_prev:
+        if state.dfa_q > state.dfa_q_prev and state.done_reason not in ("goal_xy", "goal_3d", "success"):
             rm += float(self._r.rm_subgoal_bonus)
+        rm += float(self._r.rm_subgoal_bonus) * float(state.pillar_collision_snap.get("pillars_passed_count", 0))
         c.rm_bonus = rm
 
         # --- Time ---

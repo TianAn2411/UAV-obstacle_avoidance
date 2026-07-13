@@ -1,5 +1,6 @@
 import dataclasses
 import logging
+import math
 import multiprocessing as mp
 import os
 import tempfile
@@ -337,6 +338,12 @@ def make_env(
             max_pillars=int(stage_conf.get("max_pillars", num_pillars) if stage_conf else num_pillars),
             uniform_pillar=bool(stage_conf.get("uniform_pillar", False) if stage_conf else False),
         )
+        _pcfg_fields = {f.name for f in dataclasses.fields(PillarConfig)} - {
+            "num_pillars", "min_pillars", "max_pillars", "uniform_pillar",
+        }
+        for key, val in (stage_conf or {}).items():
+            if key in _pcfg_fields:
+                setattr(pcfg, key, val)
 
         # Log dir: env_logs/env_{rank}/stage{N}_{ts}/
         if env_log_dir:
@@ -375,6 +382,18 @@ def run_training(stage: int = 1) -> None:
             f"[run_training] No curriculum entry found for stage={stage} in {config_path}"
         )
 
+    # yaw_curriculum_carryover_steps derived from the previous stage's min_steps
+    # instead of hand-copied in yaml -- avoids a duplicated number that silently
+    # goes stale the moment either stage's min_steps is edited without the other.
+    if conf.get("yaw_curriculum_carryover_from_prev_stage"):
+        prev_conf = next((e for e in ppo_cfg["curriculum"] if e["stage"] == stage - 1), None)
+        if prev_conf is None:
+            raise ValueError(
+                f"[run_training] stage={stage} sets yaw_curriculum_carryover_from_prev_stage "
+                f"but no stage={stage - 1} curriculum entry exists"
+            )
+        conf["yaw_curriculum_carryover_steps"] = int(prev_conf["min_steps"])
+
     # Track A ("raw", default) vs Track B (SAGE, "symbolic") — global toggle, not
     # per-curriculum-stage. Forwarded into `conf` below so EnvConfig picks it up
     # via make_env()'s existing generic stage_conf -> EnvConfig field filter.
@@ -386,6 +405,8 @@ def run_training(stage: int = 1) -> None:
     # stage_conf -> EnvConfig's generic field filter in make_env(). No effect
     # when policy_mode="raw" (CBFShield only exists inside SAGEPipeline).
     conf["cbf_enabled"] = bool(ppo_cfg.get("cbf_enabled", False))
+    conf["cbf_safety_margin"] = float(ppo_cfg.get("cbf_safety_margin", 0.5))
+    conf["cbf_alpha"] = float(ppo_cfg.get("cbf_alpha", 2.0))
 
     n_envs = ppo_cfg["n_envs"]
     check_freq = ppo_cfg.get("checkpoint_freq", 10000)
@@ -582,7 +603,7 @@ def run_training(stage: int = 1) -> None:
         # Stage transfer: load prev stage ret_rms — base reward scale (time/altitude/progress)
         # is identical across stages; only pillar rewards are added. Starting from calibrated
         # ret_rms avoids cold-start scaling error for first few thousand steps.
-        prev_vecnorm_path = os.path.join(project_root, f"ppo_drone_stage{stage - 1}_vecnormalize.pkl")
+        prev_vecnorm_path = os.path.join(project_root, f"{_prev_prefix}_vecnormalize.pkl")
         if os.path.exists(prev_vecnorm_path):
             _vn_load_path = prev_vecnorm_path
 
@@ -618,19 +639,44 @@ def run_training(stage: int = 1) -> None:
         logger.info("=" * 60)
 
     def _log_ppo_params(model: PPO) -> None:
+        _lr_now = model.learning_rate
+        if callable(_lr_now):
+            _lr_now = _lr_now(getattr(model, "_current_progress_remaining", 1.0))
         logger.info(
-            f"[PPO PARAMS] lr={model.learning_rate} | n_steps={model.n_steps} | "
+            f"[PPO PARAMS] lr={_lr_now:.6f} | n_steps={model.n_steps} | "
             f"batch_size={model.batch_size} | gamma={model.gamma} | "
             f"gae_lambda={model.gae_lambda} | clip_range={model.clip_range} | "
             f"ent_coef={model.ent_coef} | vf_coef={model.vf_coef} | "
             f"max_grad_norm={model.max_grad_norm}"
         )
 
+    def _make_lr_schedule(base_lr: float, kind: str, final_frac: float):
+        """SB3 calls the returned callable with progress_remaining: 1.0 at the
+        start of THIS stage's .learn() call -> 0.0 at its end. Resume-safe:
+        total_timesteps=remaining_steps + reset_num_timesteps=False (see the
+        .learn() call below) makes SB3 track progress against the stage's
+        FULL original budget, not just the remaining chunk, so an
+        interrupted/resumed run continues mid-cosine with no jump. This is
+        inherently PER-STAGE annealing (resets to peak every stage), not one
+        cycle across the whole curriculum -- matches this codebase's existing
+        per-stage .learn() + lr-reset-on-stage-transfer architecture.
+        """
+        if kind == "cosine":
+            final_lr = base_lr * final_frac
+            def _sched(progress_remaining: float) -> float:
+                return final_lr + 0.5 * (base_lr - final_lr) * (1.0 + math.cos(math.pi * (1.0 - progress_remaining)))
+            return _sched
+        return base_lr
+
+    _lr_schedule_kind = str(ppo_cfg.get("lr_schedule", "constant"))
+    _lr_final_frac = float(ppo_cfg.get("lr_final_frac", 0.1))
+    _lr_value = _make_lr_schedule(float(ppo_cfg["learning_rate"]), _lr_schedule_kind, _lr_final_frac)
+
     _ppo_override_kwargs = dict(
         n_steps=ppo_cfg["n_steps"],
         batch_size=ppo_cfg["batch_size"],
         n_epochs=ppo_cfg.get("n_epochs", 10),
-        learning_rate=ppo_cfg["learning_rate"],
+        learning_rate=_lr_value,
         gamma=ppo_cfg.get("gamma", 0.99),
         gae_lambda=ppo_cfg.get("gae_lambda", 0.95),
         clip_range=ppo_cfg.get("clip_range", 0.2),
@@ -661,7 +707,10 @@ def run_training(stage: int = 1) -> None:
         _log_ppo_params(model)
 
     elif stage > 0 and os.path.exists(prev_final_model_path):
-        _log_model_load(prev_final_model_path, f"Stage-transfer: stage {stage - 1} -> {stage} (lr=1e-4)")
+        _log_model_load(
+            prev_final_model_path,
+            f"Stage-transfer: stage {stage - 1} -> {stage} (lr peak={ppo_cfg['learning_rate']:.2e}, schedule={_lr_schedule_kind})",
+        )
         model = _ppo_load(prev_final_model_path, env=env, **_ppo_override_kwargs)
         logger.info(f"[MODEL LOAD] loaded_num_timesteps={int(getattr(model, 'num_timesteps', -1))}")
         _log_ppo_params(model)
@@ -730,14 +779,21 @@ def run_training(stage: int = 1) -> None:
             {"params": _g_rest,  "lr": _base_lr * _s_fusion, "initial_lr": _base_lr * _s_fusion},
         ], eps=1e-5)
         # SB3 calls _update_learning_rate() each rollout and flattens all param groups
-        # to the same LR — restore per-group values afterwards.
+        # to the same LR — restore per-group values afterwards, scaled by the
+        # schedule's CURRENT ratio to its own base (not pinned flat at
+        # "initial_lr" forever) so lr_schedule=cosine still anneals this
+        # stage's groups too, instead of going silently flat for the one
+        # stage cold-start fires on. main_lr_now/_base_lr == 1.0 for the
+        # constant-schedule case (unchanged prior behavior).
         import types as _types
         _orig_update_lr = type(model)._update_learning_rate
         def _patched_update_lr(self_m, optimizers):
             _orig_update_lr(self_m, optimizers)
+            main_lr_now = self_m.lr_schedule(self_m._current_progress_remaining)
+            ratio = (main_lr_now / _base_lr) if _base_lr > 0 else 1.0
             for pg in self_m.policy.optimizer.param_groups:
                 if "initial_lr" in pg:
-                    pg["lr"] = pg["initial_lr"]
+                    pg["lr"] = pg["initial_lr"] * ratio
         model._update_learning_rate = _types.MethodType(_patched_update_lr, model)
         logger.info(
             f"[CNN COLD-START] per-group LR override: "

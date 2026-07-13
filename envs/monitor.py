@@ -103,7 +103,12 @@ class TrainingMonitor(BaseCallback):
         logger.info(f"{'='*60}")
         logger.info(f"Số bước thu thập mỗi lượt (n_steps): {self.model.n_steps}")
         logger.info(f"Batch size: {self.model.batch_size}")
-        logger.info(f"Learning rate: {self.model.learning_rate:.6f}")
+        _lr = self.model.learning_rate
+        if callable(_lr):
+            _progress = getattr(self.model, "_current_progress_remaining", 1.0)
+            logger.info(f"Learning rate: {_lr(_progress):.6f} (schedule, progress_remaining={_progress:.3f})")
+        else:
+            logger.info(f"Learning rate: {_lr:.6f}")
         logger.info(f"{'='*60}\n")
 
     def _on_step(self):
@@ -158,6 +163,9 @@ class TrainingMonitor(BaseCallback):
                         start=info.get("start"),
                         dfa_q=int(info.get("dfa_q", 0)),
                         dfa_N=int(info.get("dfa_N", 1)),
+                        ep_cbf=info.get("ep_cbf"),
+                        pillars_passed=int(info.get("pillars_passed_total", 0)),
+                        pillars_total=int(info.get("pillars_spawned_total", 0)),
                     )
 
         # 1. Log tiến độ định kỳ [📊]
@@ -335,6 +343,8 @@ class TrainingMonitor(BaseCallback):
         self, reason: str, ep_comps: dict,
         steps: int = 0, dist_xy: float = 0.0, dist_start: float = 0.0,
         pos=None, start=None, dfa_q: int = 0, dfa_N: int = 1,
+        ep_cbf: dict | None = None,
+        pillars_passed: int = 0, pillars_total: int = 0,
     ) -> None:
         s = ep_comps
         pbrs     = s.get("pbrs", 0.0)
@@ -368,11 +378,17 @@ class TrainingMonitor(BaseCallback):
         ]
         line = (
             f"[EP] reason={reason} steps={steps} dist={dist_xy:.2f}/{dist_start:.2f} "
-            f"dfa={dfa_q}/{dfa_N} start={start_str} pos={pos_str} | "
+            f"dfa={dfa_q}/{dfa_N} pillars={pillars_passed}/{pillars_total} "
+            f"start={start_str} pos={pos_str} | "
             f"total={total:.1f} r_base={r_base:.1f} pbrs={pbrs:.2f} rm={rm:.2f} terminal={terminal:.1f}"
         )
         if detail:
             line += " | " + " ".join(detail)
+        cbf_penalty = s.get("cbf_intervention", 0.0)
+        if ep_cbf or abs(cbf_penalty) >= 1e-6:
+            corr_sum = float((ep_cbf or {}).get("correction_sum", 0.0))
+            corr_steps = int((ep_cbf or {}).get("correction_steps", 0))
+            line += f" | cbf_penalty={cbf_penalty:.2f} (correct {corr_sum:.2f}/{corr_steps}steps)"
         logger.info(line)
 
     def _format_reward_breakdown(self) -> str:

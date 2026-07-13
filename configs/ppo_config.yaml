@@ -10,7 +10,15 @@ policy_mode: "symbolic"  # "raw" | "symbolic"
 # CBFShield real QP vs identity passthrough — symbolic mode only (train.py
 # forwards this the same way as policy_mode, via stage_conf -> EnvConfig's
 # generic field filter in make_env()). No effect at all when policy_mode="raw".
-cbf_enabled: false
+cbf_enabled: true
+# Minimal-intervention QP (grad_h.u >= -cbf_alpha*h, h=EDT(x)-margin) -- only
+# forces an active escape once h<0 (drone already inside cbf_safety_margin),
+# scaled by cbf_alpha. Defaults (0.5m/2.0) were hardcoded and felt weak in
+# practice (intervenes but not hard enough to actually clear an obstacle) --
+# raised both: bigger margin triggers farther out, bigger alpha makes the
+# push steeper once triggered.
+cbf_safety_margin: 0.5   # metres
+cbf_alpha: 3.5
 
 seed: 42
 
@@ -18,7 +26,14 @@ seed: 42
 n_steps: 1024
 batch_size: 128
 n_epochs: 3
-learning_rate: 3.0e-4
+learning_rate: 3.0e-2         # peak LR -- lr_schedule below decides how it's used
+# Per-stage cosine anneal: progress_remaining resets to 1.0 (peak) at the
+# start of EACH stage's .learn() call, 0.0 (lr_final_frac*peak) at its end --
+# resume-safe (interrupted/checkpoint resume continues mid-cosine, no jump,
+# see train.py's _make_lr_schedule docstring). "constant" = old flat-LR
+# behavior, unchanged.
+lr_schedule: "cosine"          # "constant" | "cosine"
+lr_final_frac: 1.0e-5          # cosine floor = learning_rate * this (3e-2 -> 3e-7)
 
 # ── CNN cold-start per-group LR ────────────────────────────────────────────────
 # Chỉ kích hoạt 1 lần khi chuyển stage freeze_cnn→pillar (stage 1→2).
@@ -108,7 +123,7 @@ curriculum:
     min_pillars: 0
     max_pillars: 0
     uniform_pillar: false
-    min_steps: 90_000
+    min_steps: 90_000            # old 295_000 
     freeze_vz: false             # horizontal nav only — vz locked to 0
     freeze_cnn: true             # no pillars — CNN branch frozen, train state MLP only
     use_symbolic_extractor: true # 3-channel kinematic BEV (default False = 1-channel depth)
@@ -117,8 +132,14 @@ curriculum:
     # from easier (closer-to-aligned) starts early on, fading to full-random
     # start yaw by 300k combined steps. Stage1 carries this ramp forward via
     # yaw_curriculum_carryover_steps instead of resetting it.
+    # frac is relative to THIS stage's min_steps (90_000) -- 3.3333 means the
+    # ramp intentionally outlives stage0 (300k > 90k), finishing early into
+    # stage1 via yaw_curriculum_carryover_steps there. If min_steps above
+    # changes, this frac auto-rescales to keep the same 300k-equivalent ramp
+    # only if you also update it -- it is NOT auto-derived from the old
+    # absolute number, recompute as desired_step_count / min_steps.
     pre_episode_auto_yaw_enabled: true
-    yaw_curriculum_steps: 300000
+    yaw_curriculum_frac: 3.3333
     # Stage 0: zero noise — drone học hành vi cơ bản, nhiễu sẽ cản trở hội tụ
     obs_noise_pos_std: 0.0
     obs_noise_vel_std: 0.0
@@ -139,7 +160,7 @@ curriculum:
     min_pillars: 0
     max_pillars: 0
     uniform_pillar: false
-    min_steps: 530_000
+    min_steps: 110_000           # old 530_000
     freeze_vz: false             # vz unlocked — full altitude control
     freeze_cnn: true             # no pillars — CNN branch frozen, train state MLP only
     use_symbolic_extractor: true # 3-channel kinematic BEV (default False = 1-channel depth)
@@ -148,7 +169,8 @@ curriculum:
     # _YAW_SCHEDULE hits its 300k/0.0-assist floor almost immediately once
     # this stage starts (295_000 + a few thousand more steps).
     pre_episode_auto_yaw_enabled: true
-    yaw_curriculum_carryover_steps: 90_000
+    yaw_curriculum_frac: 1.3636  # 150_000 / this stage's min_steps (110_000)
+    yaw_curriculum_carryover_from_prev_stage: true  # = stage0's min_steps, looked up by train.py at runtime
     # Stage 1: nhiễu obs rất nhỏ, chưa có action noise/delay — vz mới mở, cần ổn định trước
     obs_noise_pos_std: 0.08
     obs_noise_vel_std: 0.04
@@ -162,15 +184,18 @@ curriculum:
     wind_speed_max: 0.5          # no wind
 
   - stage: 2
-    num_pillars: 2
-    min_pillars: 2
-    max_pillars: 3
-    uniform_pillar: true 
-    min_steps: 800_000
+    num_pillars: 7
+    min_pillars: 7
+    max_pillars: 9
+    uniform_pillar: true
+    min_decor_pillars: 0
+    max_decor_pillars: 0
+    min_steps: 550_000
     pre_episode_auto_yaw_enabled: true
-    yaw_curriculum_steps: 300000  # 0→π over first 300k steps; full random after
+    yaw_curriculum_frac: 0.1875  # 0→π over first 18.75% of min_steps (150k of 800k); full random after
     use_symbolic_extractor: true # 3-channel kinematic BEV (default False = 1-channel depth)
     # Stage 2: per-episode delay [0,1] + bắt đầu mass/wind nhẹ
+
     obs_noise_pos_std: 0.08
     obs_noise_vel_std: 0.04
     obs_noise_yaw_std: 0.015
@@ -181,14 +206,32 @@ curriculum:
     action_delay_steps_max: 1
     mass_scale_min: 0.95         # ±5% mass variation
     mass_scale_max: 1.05
-    wind_speed_max: 0.5          # up to 0.5 m/s wind
+    wind_speed_max: 0.25          # up to 0.5 m/s wind
+    # Moving pillars — off by default. Flip dynamic_pillar_enabled: true and
+    # set num_dynamic_pillars > 0 to make that many of this stage's spawned
+    # pillars random-walk (random heading, re-picked every
+    # dynamic_pillar_dir_change_interval_s) within dynamic_pillar_move_radius
+    # of their own spawn point.
+    dynamic_pillar_enabled: true
+    num_dynamic_pillars: 3
+    dynamic_pillar_speed_min: 0.4   # m/s
+    dynamic_pillar_speed_max: 1.0   # m/s
+    dynamic_pillar_move_radius: 3.0 # m
+    dynamic_pillar_dir_change_interval_s: 2.0
 
 
   - stage: 3
-    num_pillars: 3
-    min_pillars: 3
-    max_pillars: 6
+    num_pillars: 8
+    min_pillars: 5
+    max_pillars: 7
     uniform_pillar: true
+    min_decor_pillars: 3
+    max_decor_pillars: 5
+    # Few pillars this stage -> force every one into the active corridor
+    # (real dodge-required obstacle) instead of rolling p_blocking's default
+    # 0.7 chance per segment, which at low N risks episodes with too few
+    # genuine obstacles for dfa_N/skip_penalty to mean much.
+    
     min_steps: 500_000
     use_symbolic_extractor: true # 3-channel kinematic BEV (default False = 1-channel depth)
     # Stage 3: per-episode delay [0,2] — drone phải robust với nhiều mức latency
@@ -202,13 +245,21 @@ curriculum:
     action_delay_steps_max: 2
     mass_scale_min: 0.92         # ±8% mass variation
     mass_scale_max: 1.08
-    wind_speed_max: 1.0          # up to 1.0 m/s wind
+    wind_speed_max: 0.3          # up to 1.0 m/s wind
+    dynamic_pillar_enabled: true
+    num_dynamic_pillars: 3
+    dynamic_pillar_speed_min: 0.4
+    dynamic_pillar_speed_max: 0.8
+    dynamic_pillar_move_radius: 3.0
+    dynamic_pillar_dir_change_interval_s: 2.0
 
   - stage: 4
     num_pillars: 6
     min_pillars: 6
     max_pillars: 12
     uniform_pillar: true
+    min_decor_pillars: 4
+    max_decor_pillars: 8
     min_steps: 500_000
     use_symbolic_extractor: true # 3-channel kinematic BEV (default False = 1-channel depth)
     # Stage 4: gần thực tế — ESC jitter + VIO drift + delay + mass + wind đồng thời
@@ -222,13 +273,21 @@ curriculum:
     action_delay_steps_max: 2
     mass_scale_min: 0.90         # ±10% mass variation (Kaufmann 2023: ±15%)
     mass_scale_max: 1.10
-    wind_speed_max: 2.0          # up to 2.0 m/s wind
+    wind_speed_max: 0.4          # up to 0.4 m/s wind
+    dynamic_pillar_enabled: false
+    num_dynamic_pillars: 0
+    dynamic_pillar_speed_min: 0.2
+    dynamic_pillar_speed_max: 0.6
+    dynamic_pillar_move_radius: 2.0
+    dynamic_pillar_dir_change_interval_s: 2.0
 
   - stage: 5
     num_pillars: 12
     min_pillars: 12
     max_pillars: 22
     uniform_pillar: true
+    min_decor_pillars: 6
+    max_decor_pillars: 12
     min_steps: 0
     use_symbolic_extractor: true # 3-channel kinematic BEV (default False = 1-channel depth)
     # Stage 5: full sim-to-real — giữ nguyên stage 4
@@ -242,4 +301,10 @@ curriculum:
     action_delay_steps_max: 2
     mass_scale_min: 0.90
     mass_scale_max: 1.10
-    wind_speed_max: 2.0
+    wind_speed_max: 0.3
+    dynamic_pillar_enabled: false
+    num_dynamic_pillars: 0
+    dynamic_pillar_speed_min: 0.2
+    dynamic_pillar_speed_max: 0.6
+    dynamic_pillar_move_radius: 2.0
+    dynamic_pillar_dir_change_interval_s: 2.0

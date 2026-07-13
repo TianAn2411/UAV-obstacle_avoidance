@@ -137,11 +137,11 @@ class TrainManager:
             alt_optimal_high=rcfg.alt_optimal_high,
         )
 
-        # DFA state (P-NSRL)
+        # DFA state (P-NSRL) — always sourced from the straight-line waypoint
+        # chain (PillarManager._stage1_idx), regardless of pillar count.
         self._dfa_q: int = 0            # current DFA state index
         self._dfa_N: int = 1            # total subgoal checkpoints this episode
         self._dfa_q_prev: int = 0       # DFA state at previous step
-        self._dfa_use_corridor: bool = False  # True → dfa_q=corridor_avoided_count; False → stage1_idx
         self._prev_stage1_idx: int = 0  # stage1_idx at previous step (for waypoint advance delta)
         self._dfa_segment_t_boundaries: list = [0.0, 1.0]  # corridor t-boundaries per DFA segment
 
@@ -179,7 +179,13 @@ class TrainManager:
             bev = getattr(self.bridge._pipeline, "bev_mapper", None)
             map_builder = bev.map_builder if bev is not None else _NoMapBuilder()
             cbf_shield = CBFShield(
-                CBFConfig(cbf_enabled=True, vx_limit=ecfg.vx_limit, vy_limit=ecfg.vy_limit),
+                CBFConfig(
+                    cbf_enabled=True,
+                    vx_limit=ecfg.vx_limit,
+                    vy_limit=ecfg.vy_limit,
+                    cbf_safety_margin=ecfg.cbf_safety_margin,
+                    cbf_alpha=ecfg.cbf_alpha,
+                ),
                 map_builder=map_builder,
             )
         else:
@@ -195,14 +201,16 @@ class TrainManager:
         return SAGEPipeline(cfg=sage_cfg, cbf_shield=cbf_shield, primitives=primitives)
 
     def _edt_query_fn(self, pos_xy: np.ndarray):
-        """DodgePrimitive's gradient source — returns None (zero dodge
-        contribution, Primitive's own contract) when no extractor frame
-        exists yet, never raises."""
+        """Primitives' EDT clearance/gradient source — returns (h, grad_h)
+        at any world-xy point (pipeline.py forwards this callable into
+        PrimitiveState so DodgePrimitive can re-query it for lookahead, not
+        just at pos_xy). (None, None) (zero dodge contribution, Primitive's
+        own fail-open contract) when no extractor frame exists yet or the
+        point falls outside the mapped interior, never raises."""
         bev = getattr(self.bridge._pipeline, "bev_mapper", None)
         if bev is None:
-            return None
-        _, grad_h = bev.map_builder.query_barrier(pos_xy)
-        return grad_h
+            return None, None
+        return bev.map_builder.query_barrier(pos_xy)
 
     # ------------------------------------------------------------------ #
     # Public entry points (called by drone_env.py)                       #
@@ -228,7 +236,20 @@ class TrainManager:
         )
 
         # Yaw curriculum: assist_ratio ~ Uniform(min_assist, 1.0), step-wise schedule.
-        # (threshold_steps, min_assist): at each milestone min_assist drops.
+        # (threshold_frac, min_assist): fractions of ramp_steps at which
+        # min_assist drops. Same relative shape as the original fixed
+        # 300k-step schedule; ramp_steps = yaw_curriculum_frac * min_steps
+        # (both per-stage in ppo_config.yaml), so the ramp duration auto-scales
+        # if min_steps changes. yaw_curriculum_frac <= 0 => binary on/off
+        # (full assist, no fade).
+        _YAW_SCHEDULE_FRACS = [
+            (0.0 / 300_000, 1.0),
+            (50_000 / 300_000, 0.7),
+            (80_000 / 300_000, 0.6),
+            (130_000 / 300_000, 0.4),
+            (200_000 / 300_000, 0.2),
+            (300_000 / 300_000, 0.0),
+        ]
         _assist_ratio = 1.0
         if self.ecfg.pre_episode_auto_yaw_enabled:
             # + yaw_curriculum_carryover_steps: continues the ramp across a
@@ -238,19 +259,15 @@ class TrainManager:
                 max(0, self._global_step - self._stage_start_step)
                 + self.ecfg.yaw_curriculum_carryover_steps
             )
-            _YAW_SCHEDULE = [
-                (     0, 1.0),  # 0–50k:   Uniform(1.0, 1.0) — full assist
-                ( 50_000, 0.7),  # 50–80k:  Uniform(0.7, 1.0)
-                ( 80_000, 0.6),  # 80–130k: Uniform(0.6, 1.0)
-                (130_000, 0.4),  # 130–200k:Uniform(0.4, 1.0)
-                (200_000, 0.2),  # 200–300k:Uniform(0.2, 1.0)
-                (300_000, 0.0),  # 300k+:   Uniform(0.0, 1.0)
-            ]
-            _min_assist = 0.0
-            for _thresh, _val in reversed(_YAW_SCHEDULE):
-                if _steps_in_stage >= _thresh:
-                    _min_assist = _val
-                    break
+            _ramp_steps = float(self.ecfg.yaw_curriculum_frac) * float(self.ecfg.min_steps)
+            if _ramp_steps <= 0.0:
+                _min_assist = 1.0
+            else:
+                _min_assist = 0.0
+                for _frac, _val in reversed(_YAW_SCHEDULE_FRACS):
+                    if _steps_in_stage >= _frac * _ramp_steps:
+                        _min_assist = _val
+                        break
             _assist_ratio = float(self._np_random.uniform(_min_assist, 1.0))
 
         if decision.mode == "startup_arm":
@@ -315,6 +332,18 @@ class TrainManager:
             self._reset_manager.pre_episode_auto_yaw_to_goal(self._goal, _assist_ratio)
             self._pillar_manager.reset_episode(self._start, self._goal)
 
+        # Zero any wind left over from the previous episode before the scripted
+        # climb/random-altitude maneuvers below -- self._noise_manager.reset_episode()
+        # (which samples THIS episode's real wind) doesn't run until line ~385, right
+        # before the episode actually starts. Without this, those maneuvers were
+        # flying through stale prior-episode wind (up to wind_speed_max, e.g. 2.0 m/s
+        # in stage4/5) with only a bare vx=vy=yaw_rate=0 velocity-hold command and no
+        # active disturbance rejection -- risked drifting/losing altitude control
+        # while descending toward sage_random_start_alt_min before the RL policy (and
+        # its own noise/reward safeguards) ever takes over.
+        if getattr(self.bridge, "is_armed", False):
+            self.bridge.set_wind(0.0, 0.0, 0.0)
+
         # If armed but still below 1m after reset (e.g. continuous reset landed low),
         # climb to safe altitude before episode begins.
         _pos_pre = self.bridge.get_gazebo_position()
@@ -338,24 +367,14 @@ class TrainManager:
         if self._sage_pipeline is not None:
             self._sage_pipeline.reset()
 
-        # DFA reset — Option B: dfa_q = corridor_avoided_count, dfa_N = active corridor pillars.
-        # Fallback to stage1 linear waypoints when no active corridor pillars exist.
+        # DFA reset — dfa_q always sourced from the straight-line waypoint
+        # chain (stage1_idx), regardless of pillar count. Pillar-pass credit
+        # is a separate additive rm_bonus term (reward_manager.py), not part
+        # of dfa_q/dfa_N.
         self._dfa_q = 0
         self._dfa_q_prev = 0
-        if self._pillar_manager._actual_num_pillars == 0:
-            # +1: goal is the final DFA state (dfa=1.0 only at goal, not at last waypoint)
-            self._dfa_N = max(len(self._pillar_manager._stage1_sgs_xy), 1) + 1
-            self._dfa_use_corridor = False
-        else:
-            active_n = self._pillar_manager._active_corridor_pillar_count
-            if active_n > 0:
-                # +1: goal is the final DFA state (dfa=1.0 only at goal, not after last pillar)
-                self._dfa_N = active_n + 1
-                self._dfa_use_corridor = True
-            else:
-                # All pillars outside drone's path — fall back to linear progress
-                self._dfa_N = max(len(self._pillar_manager._stage1_sgs_xy), 1) + 1
-                self._dfa_use_corridor = False
+        # +1: goal is the final DFA state (dfa=1.0 only at goal, not at last waypoint)
+        self._dfa_N = max(len(self._pillar_manager._stage1_sgs_xy), 1) + 1
 
         self._dfa_segment_t_boundaries = self._compute_dfa_segment_boundaries()
 
@@ -564,12 +583,9 @@ class TrainManager:
                 edt_ch0=perception[0] if perception.shape[0] >= 3 else None,
             )
 
-        # 4b. DFA advance — Option B: corridor_avoided_count for pillar stages
+        # 4b. DFA advance — always waypoint-sourced
         self._dfa_q_prev = self._dfa_q
-        if self._dfa_use_corridor:
-            new_idx = self._pillar_manager._corridor_avoided_count
-        else:
-            new_idx = self._pillar_manager._stage1_idx
+        new_idx = self._pillar_manager._stage1_idx
         self._dfa_q = min(new_idx, self._dfa_N)
 
         # 4c. Stage1 waypoint advance (pillar stages only — fires flat bonus, not DFA)
@@ -602,8 +618,11 @@ class TrainManager:
             goal_xy_radius=self._goal_xy_radius,
         )
 
-        # Snap dfa_q to dfa_N when goal reached — ensures dfa=1.0 only at actual goal,
-        # not after last pillar/waypoint (fixes false dfa=1.0 saturation before goal).
+        # Snap dfa_q to dfa_N when goal reached — dfa=1.0 is correct/intended at
+        # actual goal arrival regardless of true waypoint progress (dfa_N's
+        # reserved final slot IS "reached goal", not "reached last waypoint").
+        # rm_subgoal_bonus is gated off this specific transition so this snap
+        # no longer double-pays "reaching goal".
         if done_reason in ("goal_xy", "goal_3d", "success"):
             self._dfa_q = self._dfa_N
 
@@ -655,10 +674,16 @@ class TrainManager:
             done_reason=done_reason,
             pos=pos,
             dist_xy=dist_xy,
+            cbf_correction_norm=self._last_cbf_correction_norm,
         )
         ep_comp_snapshot: dict | None = None
+        ep_cbf_snapshot: dict | None = None
         if terminated or truncated:
             ep_comp_snapshot = dict(self._logging_manager._ep_component_sums)
+            ep_cbf_snapshot = {
+                "correction_sum": self._logging_manager._ep_cbf_correction_sum,
+                "correction_steps": self._logging_manager._ep_cbf_correction_steps,
+            }
             self._logging_manager.record_episode_end(
                 done_reason=done_reason,
                 episode_reward=self._ep_reward_sum,
@@ -698,9 +723,13 @@ class TrainManager:
             "fence_margin": self._fence_margin_xy(pos[:2]),
             "dfa_q": self._dfa_q,
             "dfa_N": self._dfa_N,
+            "pillars_passed_total": self._pillar_manager.avoided_pillar_count,
+            "pillars_spawned_total": self._pillar_manager._actual_num_pillars,
         }
         if ep_comp_snapshot is not None:
             info["ep_reward_components"] = ep_comp_snapshot
+        if ep_cbf_snapshot is not None:
+            info["ep_cbf"] = ep_cbf_snapshot
 
         return StepResult(
             obs=obs,
@@ -1167,21 +1196,10 @@ class TrainManager:
         corridor_vec = self._goal[:2] - self._start[:2]
         corridor_norm = float(np.linalg.norm(corridor_vec)) + 1e-8
         corridor_dir = corridor_vec / corridor_norm
-        if self._dfa_use_corridor:
-            active_names = self._pillar_manager._active_corridor_pillar_names
-            t_vals = [
-                float(np.dot(
-                    np.array([float(m["x"]), float(m["y"])], dtype=np.float32) - self._start[:2],
-                    corridor_dir,
-                ))
-                for m in self._pillar_manager.last_pillar_metadata
-                if str(m.get("name", "")) in active_names
-            ]
-        else:
-            t_vals = [
-                float(np.dot(wp - self._start[:2], corridor_dir))
-                for wp in self._pillar_manager._stage1_sgs_xy
-            ]
+        t_vals = [
+            float(np.dot(wp - self._start[:2], corridor_dir))
+            for wp in self._pillar_manager._stage1_sgs_xy
+        ]
         t_vals.sort()
         return [0.0] + t_vals + [corridor_norm]
 

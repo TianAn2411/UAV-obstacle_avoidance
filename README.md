@@ -284,8 +284,7 @@ Scaled by velocity limits in `EnvConfig`, smoothed with α=0.35.
 
 All coefficients live in `configs/reward_config.py`.
 
-The reward uses **Potential-Based Reward Shaping (PBRS)** with a hybrid potential over both XY distance progress and DFA subgoal progress. This guarantees policy-invariance while providing dense shaped signal.
-
+The reward uses **Potential-Based Reward Shaping (PBRS)** 
 Key reward components:
 
 | Group | Components |
